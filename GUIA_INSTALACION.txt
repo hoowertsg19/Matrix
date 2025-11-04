@@ -1,0 +1,43 @@
+Matrix — Guía de instalación (Windows)
+
+Requisitos:
+- Windows 10/11
+- Conexión a Internet (para instalar dependencias)
+- Python 3.10 o superior (recomendado 3.11+)
+
+Pasos recomendados:
+1) Instalar Python
+   - Descarga desde: https://www.python.org/downloads/
+   - Durante la instalación, marca “Add Python to PATH”.
+   - Verifica en PowerShell:
+     python --version
+
+2) (Opcional) Crear un entorno virtual
+   - En PowerShell, dentro de la carpeta del proyecto:
+     python -m venv .venv
+     .venv\Scripts\Activate.ps1
+
+3) Instalar dependencias
+   - En PowerShell (con el entorno activado si lo creaste):
+     pip install --upgrade pip
+     pip install -r requirements.txt
+
+4) Ejecutar la aplicación
+   - En la carpeta del proyecto:
+     python matrix.py
+
+Solución de problemas:
+- “python no se reconoce como un comando…”:
+  • Abre una nueva ventana de PowerShell tras instalar Python.
+  • Reinstala Python y asegúrate de marcar “Add Python to PATH”.
+
+- ModuleNotFoundError (customtkinter, numpy, sympy):
+  • Asegúrate de haber ejecutado: pip install -r requirements.txt
+
+- Problemas con Tkinter:
+  • En Windows, Tk/Tcl viene incluido con el instalador oficial de Python.
+  • En Linux/macOS podrían requerirse paquetes adicionales (ej.: python3-tk o XQuartz), pero en Windows normalmente no es necesario.
+
+Notas:
+- Si tu organización bloquea scripts, ejecuta PowerShell como Administrador o usa el entorno virtual (.venv) para aislar dependencias.
+- Para mantener limpio el sistema, se recomienda el uso de entornos virtuales.

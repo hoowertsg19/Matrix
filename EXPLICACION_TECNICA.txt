@@ -1,0 +1,31 @@
+Matrix — Explicación técnica (resumen de arquitectura y funcionamiento)
+
+Estructura del proyecto:
+- matrix.py: Punto de entrada que lanza la app (run_app()).
+- hk_matrix/app.py: Ventana principal y control de la interfaz (CustomTkinter).
+  • Clase MatrixApp: organiza sidebar, editores, panel de resultados, historial y ventana de pasos.
+  • Clase MatrixGrid: editor de matrices con controles de filas/columnas, rellenos (identidad/aleatorio) y lectura/escritura de datos.
+  • push_result(): crea las tarjetas de resultados (vista previa, descripción, acciones, badges/etiquetas).
+  • Historial persistente: se guarda en ~/.hk_matrix_history.json y se renderiza con paginación (>5 resultados).
+  • Ventana “Paso a paso”: muestra cada estado intermedio con vista previa y pequeña descripción.
+- hk_matrix/logic/core.py: Lógica de operaciones y formateo.
+  • parse_matrix() / parse_vectors(): Parsean texto a NumPy arrays.
+  • fmt_num() / fmt_matrix(): Formateo compacto (2 decimales, sin ceros innecesarios) y representación de matrices.
+  • rref_steps(), upper_triangular_steps(), inverse_steps(), determinant_steps(): Generan pasos simbólicos/aritméticos usando SymPy para mostrar transformaciones por fila y estados intermedios.
+  • add_steps() / sub_steps(): Generan pasos por elemento. Cada paso incluye índices 1-based e imprime la operación (por ejemplo, C[1,1] = 8 [1,1] + 12 [1,1] = 20).
+  • multiply_steps(): Construye C[i,j] como suma de productos A[i,k]*B[k,j] y añade un paso informativo por entrada.
+- hk_matrix/ui/widgets.py: Widgets reutilizables.
+  • MatrixPreview: vista previa compacta de matrices para tarjetas y pasos.
+  • add_badge(): pequeña etiqueta redondeada para marcar resultados (p. ej. U, INV, det, LI/LD).
+
+Flujo general de una operación:
+1) El usuario edita matrices en MatrixGrid y elige una operación.
+2) app.py lee A y/o B y llama al generador de pasos correspondiente en core.py.
+3) Se construye el resultado y se crea una tarjeta con push_result().
+4) Al pulsar “Ver pasos”, se abre la ventana que recorre la lista de estados (matrices SymPy/NumPy) con descripciones.
+
+Decisiones de diseño:
+- CustomTkinter para una UI moderna y consistente en distintos sistemas.
+- SymPy para describir pasos (RREF, U, inversa, determinante) de forma estable y comprensible.
+- Formateo numérico uniforme con fmt_num/fmt_matrix para legibilidad.
+- Persistencia simple en JSON del historial para no perder resultados entre sesiones.

@@ -1,0 +1,24 @@
+Matrix — Descripción general
+
+Matrix es una aplicación de escritorio (GUI) para trabajar con matrices de forma visual y moderna. Permite editar matrices A y B, ejecutar operaciones comunes y ver el procedimiento paso a paso.
+
+Funciones principales:
+- Operaciones con matrices: Suma (A + B), Resta (A − B), Producto (A · B).
+- Otras utilidades: Independencia de vectores, Triangular superior (U), RREF, Transpuesta, Inversa y Determinante.
+- Paso a paso: Ventana dedicada que muestra la secuencia de transformaciones/operaciones realizadas para llegar al resultado.
+- Resultados en tarjetas: Cada resultado aparece como una tarjeta con vista previa de matriz, descripción, botones para copiar, ver pasos, enviar a los editores y quitar.
+- Historial persistente: Las tarjetas se guardan localmente y se pueden navegar por páginas. La paginación aparece solo si hay más de 5 resultados.
+
+Detalles de presentación:
+- Números con formato compacto: 2 decimales y sin ceros innecesarios (por ejemplo, 1 en lugar de 1.00).
+- Interfaz moderna con CustomTkinter: colores oscuros, bordes suaves, separación visual y microinteracciones (hover).
+
+Uso típico:
+1) Elige la sección “Operaciones” y edita las matrices A y B.
+2) Selecciona Suma, Resta o Producto y pulsa “Calcular”.
+3) Revisa la tarjeta creada; puedes copiar, ver los pasos o enviar el resultado al editor A o B.
+4) Abre la ventana “Paso a paso” para entender cómo se obtuvo el resultado.
+
+Notas:
+- La suma y la resta muestran el cálculo por elemento (por ejemplo: C[1,1] = 8 [1,1] + 12 [1,1] = 20).
+- El producto muestra la combinación por términos (suma de productos) para cada C[i,j].
