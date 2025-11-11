@@ -3,6 +3,29 @@ import sys
 import os
 from PySide6.QtGui import QFontDatabase, QFont
 from sympy import symbols as _SYM_symbols, sympify as _SYM_sympify, lambdify as _SYM_lambdify
+import matplotlib as mpl
+# Robust dark style activation (some minimal installs may not expose mpl.style)
+try:
+    from matplotlib import style as _mpl_style
+    _mpl_style.use('dark_background')
+except Exception:
+    try:
+        import matplotlib.pyplot as _plt
+        if hasattr(_plt, 'style'):
+            _plt.style.use('dark_background')
+    except Exception:
+        # Fallback: lightly tweak rcParams for dark background feel
+        try:
+            mpl.rcParams['figure.facecolor'] = '#121212'
+            mpl.rcParams['axes.facecolor'] = '#121212'
+            mpl.rcParams['axes.edgecolor'] = '#555555'
+            mpl.rcParams['axes.labelcolor'] = '#dddddd'
+            mpl.rcParams['xtick.color'] = '#cccccc'
+            mpl.rcParams['ytick.color'] = '#cccccc'
+            mpl.rcParams['text.color'] = '#dddddd'
+            mpl.rcParams['grid.color'] = '#444444'
+        except Exception:
+            pass
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 import numpy as np
@@ -15,163 +38,111 @@ from hk_matrix.logic.core import (
     transpose_steps, inverse_steps,
     determinant_steps, cramer_steps,
 )
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QPropertyAnimation
+from PySide6.QtGui import (
+    QIcon, QColor, QKeySequence, QShortcut, QPixmap, QClipboard
+)
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QPushButton, QSpinBox, QLabel, QTableWidget, QTableWidgetItem, QLineEdit,
+    QListWidget, QListWidgetItem, QComboBox, QSplitter, QScrollArea,
+    QDialog, QAbstractItemView, QCheckBox, QDoubleSpinBox, QToolButton,
+    QProgressBar, QFrame, QGraphicsDropShadowEffect
+)
 
-try:
-    from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-        QPushButton, QSpinBox, QLabel, QTableWidget, QTableWidgetItem, QTextEdit, QLineEdit,
-        QListWidget, QListWidgetItem, QComboBox, QSplitter, QScrollArea, QSizePolicy,
-        QDialog, QAbstractItemView, QCheckBox, QDoubleSpinBox, QToolButton,
-        QProgressBar, QFrame, QGraphicsDropShadowEffect      # <-- añadido
-    )
-    from PySide6.QtCore import Qt, QObject, Slot, Signal
-    from PySide6.QtGui import QClipboard, QShortcut, QKeySequence, QColor, QFont, QIcon, QPixmap
-    from PySide6.QtCore import QTimer, QEasingCurve, QPropertyAnimation
-    # WebEngine eliminado: evitamos importar Qt WebEngine/WebChannel para prevenir
-    # cierres nativos en algunos entornos. El editor visual se retiró por compatibilidad.
-except Exception as e:
-    raise ImportError('PySide6 is required for the Qt UI. Install via `pip install PySide6`.') from e
+# Tipografía matemática monoespaciada utilizada en tablas y fórmulas sencillas
+MATH_FONT_STACK = "'Consolas','DejaVu Sans Mono','Courier New',monospace"
+
+
+class TrimDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox que evita notación científica y ceros de relleno al mostrar."""
+    def textFromValue(self, value: float) -> str:  # type: ignore[override]
+        # Representación con número de decimales configurado y sin ceros innecesarios
+        try:
+            s = f"{value:.{self.decimals()}f}"
+            if '.' in s:
+                s = s.rstrip('0').rstrip('.')
+            # Si es -0, mostrar 0
+            if s in ('-0', '-0.0'):
+                s = '0'
+            return s
+        except Exception:
+            return super().textFromValue(value)
 
 
 class MatrixTable(QTableWidget):
-    def __init__(self, rows=3, cols=3, parent=None):
+    """Tabla simple para edición de matrices con utilidades de tamaño, aleatorio y extracción."""
+    def __init__(self, rows: int, cols: int, parent=None):
         super().__init__(rows, cols, parent)
-        self.setRowCount(rows); self.setColumnCount(cols)
-        self._refresh_headers()
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAlternatingRowColors(True)
+        self.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self._ensure_items()
 
-    def _refresh_headers(self):
-        self.setHorizontalHeaderLabels([str(i+1) for i in range(self.columnCount())])
-        self.setVerticalHeaderLabels([str(i+1) for i in range(self.rowCount())])
-
-    def set_headers(self, col_headers: list[str] | None = None, row_headers: list[str] | None = None):
-        if col_headers is not None:
-            # ensure length matches
-            if len(col_headers) != self.columnCount():
-                self.setColumnCount(len(col_headers))
-            self.setHorizontalHeaderLabels(col_headers)
-        if row_headers is not None:
-            if len(row_headers) != self.rowCount():
-                self.setRowCount(len(row_headers))
-            self.setVerticalHeaderLabels(row_headers)
+    def _ensure_items(self):
+        for i in range(self.rowCount()):
+            for j in range(self.columnCount()):
+                if not self.item(i, j):
+                    self.setItem(i, j, QTableWidgetItem('0'))
 
     def set_size(self, rows: int, cols: int):
-        self.setRowCount(rows); self.setColumnCount(cols); self._refresh_headers()
+        self.setRowCount(rows)
+        self.setColumnCount(cols)
+        self._ensure_items()
+        self.resizeColumnsToContents()
 
-    def set_matrix(self, mat: np.ndarray):
-        r, c = mat.shape
-        self.set_size(r, c)
-        for i in range(r):
-            for j in range(c):
-                v = float(mat[i, j])
-                s = str(int(v)) if float(v).is_integer() else str(v)
-                item = QTableWidgetItem(s)
-                item.setTextAlignment(Qt.AlignCenter)
-                self.setItem(i, j, item)
+    def set_headers(self, row_headers=None, col_headers=None):
+        if col_headers is not None:
+            self.setColumnCount(len(col_headers))
+            self.setHorizontalHeaderLabels([str(x) for x in col_headers])
+        if row_headers is not None:
+            self.setRowCount(len(row_headers))
+            self.setVerticalHeaderLabels([str(x) for x in row_headers])
+        self._ensure_items()
 
     def get_matrix(self) -> np.ndarray:
-        r = self.rowCount(); c = self.columnCount()
-        out = np.zeros((r, c), dtype=float)
+        r, c = self.rowCount(), self.columnCount()
+        arr = np.zeros((r, c), dtype=float)
         for i in range(r):
             for j in range(c):
                 it = self.item(i, j)
-                txt = it.text().strip() if it else ''
-                out[i, j] = 0.0 if txt == '' else float(txt)
-        return out
+                txt = it.text().strip() if it else '0'
+                try:
+                    arr[i, j] = float(txt.replace(',', '.'))
+                except Exception:
+                    arr[i, j] = 0.0
+        return arr
 
-    def fill_random(self, low: int = -9, high: int = 9):
-        r = self.rowCount(); c = self.columnCount()
-        M = np.random.randint(low, high + 1, size=(r, c)).astype(float)
-        self.set_matrix(M)
-
-
-MATH_FONT_STACK = "'Garamond Math','EB Garamond Math','Cambria Math','STIX Two Math','Latin Modern Math','Times New Roman',serif"
-
-# Simple LaTeX renderer using matplotlib's mathtext to display pretty formulas in labels
-# Removed LaTeX rendering via matplotlib.mathtext to reduce dependencies
-
-# SpinBox que evita ceros de relleno (muestra 0,1 en lugar de 0,100000)
-class TrimDoubleSpinBox(QDoubleSpinBox):
-    """QDoubleSpinBox que:
-    - No usa notación científica en pantalla.
-    - No rellena con ceros; respeta lo que el usuario escribió (coma o punto) tras validar.
-    - Para valores puestos por código, muestra número plano sin ceros ni notación científica.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Inicializar primero los atributos antes de llamar a setters que
-        # pueden invocar textFromValue internamente.
-        self._last_user_text: str | None = None
-        self._last_user_value: float | None = None
-        self.setDecimals(12)
-        try:
-            self.lineEdit().textEdited.connect(self._on_text_edited)  # type: ignore
-            self.editingFinished.connect(self._on_edit_finished)      # type: ignore
-            self.valueChanged.connect(self._on_value_changed)         # type: ignore
-        except Exception:
-            pass
-
-    def setValue(self, val: float) -> None:  # type: ignore[override]
-        # Al establecer por código, olvidamos el último texto del usuario
-        self._last_user_text = None
-        self._last_user_value = None
-        return super().setValue(val)
-
-    def _on_text_edited(self, text: str):
-        self._last_user_text = text
-
-    def _on_edit_finished(self):
-        # Guardamos el valor final para que textFromValue pueda restaurar el texto original
-        try:
-            self._last_user_value = float(self.value())
-        except Exception:
-            self._last_user_value = None
-
-    def _on_value_changed(self, _):
-        # Si el cambio fue por flechas/rueda, no conservar el texto previo
-        if not self.hasFocus():
-            self._last_user_text = None
-            self._last_user_value = None
-
-    def textFromValue(self, value: float) -> str:  # type: ignore[override]
-        # Si el valor actual coincide con el que el usuario escribió, devolvemos su texto sin tocar
-        if self._last_user_value is not None and abs(value - self._last_user_value) <= (10 ** -self.decimals()):
-            if isinstance(self._last_user_text, str) and self._last_user_text.strip() != '':
-                return self._last_user_text
-
-        # Formateo plano sin notación científica ni ceros sobrantes
-        s = f"{float(value):.12f}"
-        # recortar ceros y punto final
-        if '.' in s:
-            s = s.rstrip('0').rstrip('.')
-        # aplicar separador decimal de la locale
-        dp = self.locale().decimalPoint()
-        if dp != '.':
-            s = s.replace('.', dp)
-        return s
-
-# def latex_to_pixmap(...) removed (unused)
+    def fill_random(self, low: int = -5, high: int = 6):
+        r, c = self.rowCount(), self.columnCount()
+        vals = np.random.randint(low, high, size=(r, c))
+        # Evitar que toda la matriz sea cero
+        if not np.any(vals):
+            vals[0, 0] = 1
+        for i in range(r):
+            for j in range(c):
+                self.setItem(i, j, QTableWidgetItem(str(int(vals[i, j]))))
+        self.resizeColumnsToContents()
 
 
-def set_table_preview(table: QTableWidget, mat: np.ndarray):
-    r, c = mat.shape
-    table.setRowCount(r); table.setColumnCount(c)
-    table.setAlternatingRowColors(True)
-    table.setStyleSheet(f"QTableWidget{{gridline-color:#444;}} QTableWidget::item{{padding:4px; font-family: {MATH_FONT_STACK};}} QTableWidget::item:selected{{background: transparent; color: inherit;}}")
-    # Make preview tables non-selectable to avoid random blue highlights
-    table.setSelectionMode(QAbstractItemView.NoSelection)
-    table.setFocusPolicy(Qt.NoFocus)
+def set_table_preview(tbl: QTableWidget, arr: np.ndarray, decimals: int = 2):
+    """Pinta en una QTableWidget la matriz arr solo para vista previa."""
+    arr = np.array(arr, dtype=float)
+    r, c = arr.shape
+    tbl.setRowCount(r)
+    tbl.setColumnCount(c)
     for i in range(r):
         for j in range(c):
-            v = float(mat[i, j])
-            s = str(int(v)) if float(v).is_integer() else f"{v:.2f}"
-            item = QTableWidgetItem(s)
-            item.setFlags(Qt.ItemIsEnabled)
-            item.setTextAlignment(Qt.AlignCenter)
-            f = item.font(); f.setFamily('Consolas'); item.setFont(f)
-            table.setItem(i, j, item)
-
+            v = float(arr[i, j])
+            if float(v).is_integer():
+                s = str(int(v))
+            else:
+                s = f"{v:.{decimals}f}"
+            it = QTableWidgetItem(s)
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            tbl.setItem(i, j, it)
+    tbl.resizeColumnsToContents()
 
 class StepsDialog(QDialog):
     def __init__(self, steps, parent=None):
@@ -180,55 +151,43 @@ class StepsDialog(QDialog):
         self.resize(940, 620)
         self.steps = steps
 
-        # Root layout
         root = QHBoxLayout(self)
         left = QVBoxLayout(); right = QVBoxLayout()
         root.addLayout(left, 1); root.addLayout(right, 2)
 
-        # Left: step list
         self.listbox = QListWidget(); left.addWidget(self.listbox)
         for i, (desc, _) in enumerate(steps):
             QListWidgetItem(f"{i+1}. {desc}", self.listbox)
 
-        # Right: header toolbar
         header = QHBoxLayout(); right.addLayout(header)
         self.step_title = QLabel(''); self.step_title.setStyleSheet('font-weight:600; font-size:14px;')
         header.addWidget(self.step_title, 1)
         header.addWidget(QLabel('Decimales:'))
-        self.decimals = QSpinBox(); self.decimals.setRange(0, 8); self.decimals.setValue(2)
-        header.addWidget(self.decimals)
+        self.decimals = QSpinBox(); self.decimals.setRange(0,8); self.decimals.setValue(2); header.addWidget(self.decimals)
         self.only_changes = QCheckBox('Solo cambios'); header.addWidget(self.only_changes)
         self.manual_mode = QCheckBox('Modo manual'); header.addWidget(self.manual_mode)
         self.copy_btn = QPushButton('📋 Copiar matriz'); header.addWidget(self.copy_btn)
 
-        # Right: preview table
-        self.preview = QTableWidget();
-        self.preview.setAlternatingRowColors(True)
+        self.preview = QTableWidget(); self.preview.setAlternatingRowColors(True)
         self.preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.preview.setSelectionMode(QAbstractItemView.NoSelection)
         self.preview.setFocusPolicy(Qt.NoFocus)
-        self.preview.setStyleSheet("QTableWidget::item:selected{background: transparent; color: inherit;}")
+        self.preview.setStyleSheet('QTableWidget::item:selected{background:transparent; color:inherit;}')
         right.addWidget(self.preview, 1)
-        # Manual explanation panel
-        self.explain = QLabel('')
-        self.explain.setWordWrap(True)
-        self.explain.setStyleSheet(f"font-family: {MATH_FONT_STACK}; color:#cfd8dc;")
+
+        self.explain = QLabel(''); self.explain.setWordWrap(True)
+        self.explain.setStyleSheet(f"font-family:{MATH_FONT_STACK}; color:#cfd8dc;")
         right.addWidget(self.explain)
 
-        # Info row
-        self.stats = QLabel(''); self.stats.setStyleSheet('color:#888;')
-        right.addWidget(self.stats)
+        self.stats = QLabel(''); self.stats.setStyleSheet('color:#888;'); right.addWidget(self.stats)
 
-        # Navigation
         nav = QHBoxLayout(); right.addLayout(nav)
         self.prev_btn = QPushButton('◀ Anterior'); self.next_btn = QPushButton('Siguiente ▶')
         nav.addWidget(self.prev_btn); nav.addWidget(self.next_btn); nav.addStretch(1)
 
-        # Keyboard shortcuts
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=lambda: self._move(-1))
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=lambda: self._move(+1))
 
-        # Wire up
         self.listbox.currentRowChanged.connect(self._on_select)
         self.prev_btn.clicked.connect(lambda: self._move(-1))
         self.next_btn.clicked.connect(lambda: self._move(+1))
@@ -237,109 +196,62 @@ class StepsDialog(QDialog):
         self.manual_mode.toggled.connect(lambda _=None: self._on_select(self.listbox.currentRow()))
         self.copy_btn.clicked.connect(self._copy_current)
 
-        # Initial selection
         if steps:
             self.listbox.setCurrentRow(0)
+        self.setStyleSheet('QListWidget::item{padding:6px;} QTableWidget{gridline-color:#444;}')
 
-        # Subtle styling
-        self.setStyleSheet('QListWidget::item { padding:6px; } QTableWidget { gridline-color:#444; }')
-
-    def _move(self, delta):
+    def _move(self, delta: int):
         i = max(0, min(self.listbox.count()-1, self.listbox.currentRow()+delta))
         self.listbox.setCurrentRow(i)
         if 0 <= i < self.listbox.count():
-            try:
-                self.step_title.setText(self.listbox.item(i).text())
-            except Exception:
-                pass
+            self.step_title.setText(self.listbox.item(i).text())
         self._on_select(i)
 
-    def _on_select(self, row):
-        if row < 0 or row >= len(self.steps):
-            return
-        desc, mat = self.steps[row]
-        self.step_title.setText(desc)
+    def _on_select(self, row: int):
+        if row < 0 or row >= len(self.steps): return
+        desc, mat = self.steps[row]; self.step_title.setText(desc)
         arr = np.array(mat.tolist(), dtype=float)
-        prev = None
-        if row > 0:
-            prev = np.array(self.steps[row-1][1].tolist(), dtype=float)
-        # Parse description for manual-like hints
+        prev = np.array(self.steps[row-1][1].tolist(), dtype=float) if row>0 else None
         hl_rows, hl_cols, pretty = self._parse_step_description(desc)
         self._render_matrix(arr, prev, hl_rows=hl_rows, hl_cols=hl_cols)
         self.explain.setText(pretty if self.manual_mode.isChecked() else '')
-        # Stats
-        changed = 0
+        d = self.decimals.value(); changed = 0
         if prev is not None:
-            changed = int(np.sum(np.round(arr, self.decimals.value()) != np.round(prev, self.decimals.value())))
+            changed = int(np.sum(np.round(arr,d) != np.round(prev,d)))
         self.stats.setText(f"Tamaño: {arr.shape[0]} × {arr.shape[1]}  •  Celdas cambiadas: {changed}")
 
     def _render_matrix(self, arr: np.ndarray, prev: np.ndarray | None, hl_rows: set[int] | None = None, hl_cols: set[int] | None = None):
-        d = self.decimals.value()
-        r, c = arr.shape
+        d = self.decimals.value(); r,c = arr.shape
         self.preview.setRowCount(r); self.preview.setColumnCount(c)
         for i in range(r):
             for j in range(c):
-                v = float(arr[i, j])
-                s = f"{v:.{d}f}" if not float(v).is_integer() or d > 0 else str(int(v))
-                item = QTableWidgetItem(s)
-                item.setFlags(Qt.ItemIsEnabled)
-                item.setTextAlignment(Qt.AlignCenter)
-                # Highlight if changed vs previous
+                v = float(arr[i,j]); s = f"{v:.{d}f}" if (not float(v).is_integer() or d>0) else str(int(v))
+                item = QTableWidgetItem(s); item.setFlags(Qt.ItemIsEnabled); item.setTextAlignment(Qt.AlignCenter)
                 if prev is not None:
-                    pv = float(prev[i, j])
-                    if round(v, d) != round(pv, d):
-                        # Highlight changed cells with requested celeste and bold text
-                        item.setBackground(QColor('#0099a8'))
-                        f = item.font(); f.setBold(True); item.setFont(f)
-                        item.setForeground(QColor('white'))
+                    pv = float(prev[i,j])
+                    if round(v,d) != round(pv,d):
+                        item.setBackground(QColor('#0099a8')); f = item.font(); f.setBold(True); item.setFont(f); item.setForeground(QColor('white'))
                     elif self.only_changes.isChecked():
-                        # Dim unchanged cells when 'Solo cambios' is enabled
                         item.setForeground(QColor('#777777'))
-                # Manual-mode row/col soft highlight
-                if hl_rows and i in hl_rows:
-                    # only set if not already strong-highlighted
-                    if item.background().color().name().lower() in ('#000000', '#00000000'):
-                        item.setBackground(QColor(0, 153, 168, 40))  # soft accent
-                if hl_cols and j in hl_cols:
-                    if item.background().color().name().lower() in ('#000000', '#00000000'):
-                        item.setBackground(QColor(0, 153, 168, 30))
-                self.preview.setItem(i, j, item)
-        # Ensure no selection remains
+                if hl_rows and i in hl_rows and item.background().color().alpha() == 0:
+                    item.setBackground(QColor(0,153,168,40))
+                if hl_cols and j in hl_cols and item.background().color().alpha() == 0:
+                    item.setBackground(QColor(0,153,168,30))
+                self.preview.setItem(i,j,item)
         self.preview.clearSelection()
 
     def _parse_step_description(self, desc: str):
-        """Parse Spanish step descriptions to extract affected rows/cols and a prettier manual-style text.
-        Returns (hl_rows, hl_cols, pretty_html_or_text).
-        """
         import re
-        hl_rows: set[int] = set()
-        hl_cols: set[int] = set()
-        pretty = desc
-        d = desc.strip()
-        # Intercambio de filas
+        hl_rows: set[int] = set(); hl_cols: set[int] = set(); pretty = desc; d = desc.strip()
         m = re.search(r"Intercambiar\s+fila\s+(\d+)\s+con\s+fila\s+(\d+)", d, re.IGNORECASE)
         if m:
-            i, j = int(m.group(1))-1, int(m.group(2))-1
-            hl_rows.update({i, j})
-            pretty = f"Operación por filas: R{m.group(1)} ↔ R{m.group(2)}"
-            return hl_rows, hl_cols, pretty
-        # Dividir fila k por x
+            i,j = int(m.group(1))-1, int(m.group(2))-1; hl_rows.update({i,j}); pretty = f"Operación por filas: R{m.group(1)} ↔ R{m.group(2)}"; return hl_rows, hl_cols, pretty
         m = re.search(r"Dividir\s+fila\s+(\d+)\s+por\s+([\-\d\./]+)", d, re.IGNORECASE)
         if m:
-            i = int(m.group(1))-1; x = m.group(2)
-            hl_rows.add(i)
-            pretty = f"Escalado: R{m.group(1)} ← R{m.group(1)}/{x}"
-            return hl_rows, hl_cols, pretty
-        # Rk <- Rk ± (coef)*Rj variantes
+            i = int(m.group(1))-1; x = m.group(2); hl_rows.add(i); pretty = f"Escalado: R{m.group(1)} ← R{m.group(1)}/{x}"; return hl_rows, hl_cols, pretty
         m = re.search(r"R\s*(\d+)\s*<-\s*R\s*\1\s*([+\-])\s*\(?([\-\d\./]+)\)?\s*\*?\s*R\s*(\d+)", d)
         if m:
-            k, sign, coef, j = m.groups()
-            k_i = int(k)-1; j_i = int(j)-1
-            hl_rows.update({k_i, j_i})
-            op = '+' if sign == '+' else '−'
-            pretty = f"Operación elemental: R{k} ← R{k} {op} ({coef})·R{j}"
-            return hl_rows, hl_cols, pretty
-        # Calcular C[i,j] cases => show as-is but monospace
+            k, sign, coef, j = m.groups(); k_i = int(k)-1; j_i = int(j)-1; hl_rows.update({k_i,j_i}); op = '+' if sign == '+' else '−'; pretty = f"Operación elemental: R{k} ← R{k} {op} ({coef})·R{j}"; return hl_rows, hl_cols, pretty
         if d.lower().startswith('calcular'):
             pretty = d
         return hl_rows, hl_cols, pretty
@@ -347,27 +259,39 @@ class StepsDialog(QDialog):
     def _copy_current(self):
         row = self.listbox.currentRow()
         if 0 <= row < len(self.steps):
-            _, mat = self.steps[row]
-            arr = np.array(mat.tolist(), dtype=float)
+            _, mat = self.steps[row]; arr = np.array(mat.tolist(), dtype=float)
             self.parent().copy_to_clipboard(fmt_matrix(arr, self.decimals.value()))
 
 class BisectionResultDialog(QDialog):
-    def __init__(self, expr_text: str, xi: float, xu: float, rows, parent=None):
+    def __init__(self, expr_text: str, xi: float, xu: float, rows, epsilon_text: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Método de Bisección — Detalles')
         self.resize(960, 640)
 
         lay = QVBoxLayout(self)
         title = QLabel('<b>Método de bisección</b>'); lay.addWidget(title)
-        formula = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
-        lay.addWidget(formula)
-
+        # Encabezado con métricas solicitadas
+        header = QWidget(); grid = QGridLayout(header)
+        grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(4)
+        grid.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>"), 0, 0, 1, 4)
         if rows:
             n = len(rows)
             xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
             sgn = '+' if xr >= 0 else ''
-            summary = QLabel(f"El método converge en <b>{n}</b> iteraciones.  LA RAÍZ ES: <b>{sgn}{xr:.6f}</b>")
-            lay.addWidget(summary)
+            grid.addWidget(QLabel(f"Iteraciones: <b>{n}</b>"), 1, 0)
+            grid.addWidget(QLabel(f"Raíz: <b>{sgn}{xr:.6f}</b>"), 1, 1)
+            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), 1, 2)
+            grid.addWidget(QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b>"), 1, 3)
+            if epsilon_text is not None and epsilon_text != '':
+                grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), 2, 0)
+        # estilizar header
+        for i in range(grid.count()):
+            w = grid.itemAt(i).widget()
+            if isinstance(w, QLabel):
+                w.setStyleSheet("color:#ddd;")
+        lay.addWidget(header)
 
         tbl = QTableWidget(); lay.addWidget(tbl)
         headers = ['iteración','xi','xu','xr','Ea','yi','yu','yr']
@@ -413,13 +337,18 @@ class MatrixQtApp(QMainWindow):
         except Exception:
             pass
         self.resize(1280, 800)
-
+        # Root layout
         central = QWidget(); self.setCentralWidget(central)
         layout = QHBoxLayout(central)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
 
         # Sidebar
-        sidebar = QVBoxLayout(); layout.addLayout(sidebar, 0)
-        btn_style = {}
+        sidebar_widget = QWidget(); sidebar_widget.setMinimumWidth(200)
+        sidebar = QVBoxLayout(sidebar_widget)
+        sidebar.setContentsMargins(0, 0, 12, 0)
+        sidebar.setSpacing(8)
+        layout.addWidget(sidebar_widget, 0)
         self.btn_ops = QPushButton('🧮 Operaciones'); sidebar.addWidget(self.btn_ops)
         self.btn_ind = QPushButton('🧭 Independencia'); sidebar.addWidget(self.btn_ind)
         self.btn_triu = QPushButton('🔺 Triangular U'); sidebar.addWidget(self.btn_triu)
@@ -428,6 +357,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_det = QPushButton('🧾 Determinante'); sidebar.addWidget(self.btn_det)
         self.btn_cramer = QPushButton('📐 Método de Cramer'); sidebar.addWidget(self.btn_cramer)
         self.btn_bis = QPushButton('📉 Bisección'); sidebar.addWidget(self.btn_bis)
+        self.btn_fp = QPushButton('📈 Falsa posición'); sidebar.addWidget(self.btn_fp)
         sidebar.addStretch(1)
 
         # Center and Right using splitter
@@ -436,13 +366,19 @@ class MatrixQtApp(QMainWindow):
 
         self.center = QWidget(); splitter.addWidget(self.center)
         cgrid = QVBoxLayout(self.center)
+        cgrid.setContentsMargins(0, 0, 0, 0)
+        cgrid.setSpacing(12)
         self.center_title = QLabel(''); self.center_title.setObjectName('pageTitle'); cgrid.addWidget(self.center_title)
         self.center_body = QWidget(); self.center_layout = QVBoxLayout(self.center_body)
+        self.center_layout.setContentsMargins(0, 0, 0, 0)
+        self.center_layout.setSpacing(12)
         cgrid.addWidget(self.center_body, 1)
 
         # Right results panel in scroll area
         self.right_scroll = QScrollArea(); self.right_scroll.setWidgetResizable(True)
         self.right_container = QWidget(); self.right_layout = QVBoxLayout(self.right_container)
+        self.right_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_layout.setSpacing(12)
         self.right_scroll.setWidget(self.right_container)
         splitter.addWidget(self.right_scroll)
         splitter.setSizes([850, 430])
@@ -456,6 +392,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_det.clicked.connect(self.show_det)
         self.btn_cramer.clicked.connect(self.show_cramer)
         self.btn_bis.clicked.connect(self.show_bisection)
+        self.btn_fp.clicked.connect(self.show_false_position)
 
         # state
         self.current_view = None
@@ -548,6 +485,45 @@ class MatrixQtApp(QMainWindow):
             }}
             QSpinBox, QDoubleSpinBox {{
                 font-family: {MATH_FONT_STACK};
+            }}
+
+            /* Modern buttons base and variants */
+            QPushButton {{
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 600;
+                min-height: 32px;
+            }}
+            QPushButton:hover {{ opacity: 0.9; }}
+            QPushButton:pressed {{ opacity: 0.8; }}
+            QPushButton#btnPrimary {{ background-color: #0d6efd; color: white; }}
+            QPushButton#btnSecondary {{ background-color: #6c757d; color: white; }}
+
+            /* Modern tables */
+            QTableWidget {{
+                gridline-color: #404040;
+                border: 1px solid #404040;
+                border-radius: 6px;
+            }}
+            QHeaderView::section {{
+                background-color: #2d2d2d;
+                padding: 6px;
+                border: 1px solid #404040;
+                font-weight: 600;
+            }}
+            QTableWidget::item {{
+                padding: 4px;
+                font-family: 'Consolas','Courier New',monospace;
+            }}
+
+            /* Result frames */
+            QFrame#resultFrame {{
+                background-color: #2d2d2d;
+                border: 1px solid #404040;
+                border-radius: 8px;
+                padding: 12px;
+                margin: 4px 0;
             }}
         """)
 
@@ -984,9 +960,195 @@ class MatrixQtApp(QMainWindow):
         self.current_view = 'bisection'
         self.center_title.setText('Método de Bisección')
         self.clear_center()
+        wrap = QWidget(); box = QVBoxLayout(wrap)
+        box.setContentsMargins(8, 4, 8, 6); box.setSpacing(6)
+        wrap.setMaximumWidth(720)
+
+        fn_row = QHBoxLayout(); box.addLayout(fn_row)
+        lbl_fn = QLabel('f(x) ='); lbl_fn.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:14px;")
+        fn_row.addWidget(lbl_fn)
+        expr_edit = QLineEdit(''); expr_edit.setPlaceholderText('Expresión en x, p.ej. x**3 - x - 2')
+        expr_edit.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:13px;")
+        expr_edit.setFixedHeight(28)
+        fn_row.addWidget(expr_edit, 1)
+
+        keys_panel = QWidget(); kb = QGridLayout(keys_panel)
+        kb.setContentsMargins(0,4,0,0); kb.setHorizontalSpacing(6); kb.setVerticalSpacing(6)
+        box.addWidget(keys_panel)
+        def add_key(text, insert, r, c):
+            btn = QToolButton(); btn.setText(text); btn.setFixedSize(40,34)
+            btn.setStyleSheet("QToolButton{background:#2b2d31; border:1px solid #3a3d41; border-radius:6px; font-family:"+MATH_FONT_STACK+"; font-size:13px;}QToolButton:hover{border-color:#0099a8}QToolButton:pressed{background:#1f2225}")
+            btn.setToolTip(insert); kb.addWidget(btn, r, c)
+            def on_click():
+                expr_edit.insert(insert)
+                if insert.endswith('()'):
+                    expr_edit.setCursorPosition(expr_edit.cursorPosition()-1)
+            btn.clicked.connect(on_click)
+        for idx,(t,i) in enumerate([('x','x'),('x^2','**2'),('x^3','**3'),('^','**'),('(','('),(')',')'),('|x|','Abs()'),('√','sqrt()')]):
+            add_key(t,i,0,idx)
+        for idx,(t,i) in enumerate([('sen','sin()'),('cos','cos()'),('tg','tan()'),('ln','ln()'),('log','log()'),('exp','exp()'),('π','pi'),('e','E')]):
+            add_key(t,i,1,idx)
+        for r, cols in enumerate([[('7','7'),('8','8'),('9','9'),('÷','/')],[('4','4'),('5','5'),('6','6'),('×','*')],[('1','1'),('2','2'),('3','3'),('−','-')],[('0','0'),('.','.'),(', ',','),('+','+')]], start=2):
+            for c,(t,i) in enumerate(cols):
+                add_key(t,i,r,c)
+
+        fmt_lbl = QLabel('Formato: usa ** para potencias; funciones SymPy disponibles (sin, cos, exp, log, ...).')
+        fmt_lbl.setStyleSheet('color:#9aa4aa; font-size:12px;'); box.addWidget(fmt_lbl)
+
+        p_row = QHBoxLayout(); p_row.setSpacing(12); box.addLayout(p_row)
+        def make_col(label_text, widget):
+            col = QVBoxLayout(); lab = QLabel(label_text); lab.setStyleSheet('color:#9aa4aa; font-size:12px;')
+            col.addWidget(lab); col.addWidget(widget); return col
+        xi_spin = TrimDoubleSpinBox(); xi_spin.setDecimals(8); xi_spin.setRange(-1e12,1e12); xi_spin.setSpecialValueText(''); xi_spin.setValue(xi_spin.minimum()); xi_spin.setFixedWidth(120)
+        xu_spin = TrimDoubleSpinBox(); xu_spin.setDecimals(8); xu_spin.setRange(-1e12,1e12); xu_spin.setSpecialValueText(''); xu_spin.setValue(xu_spin.minimum()); xu_spin.setFixedWidth(120)
+        eps_spin = TrimDoubleSpinBox(); eps_spin.setDecimals(8); eps_spin.setRange(1e-12,1.0); eps_spin.setSingleStep(1e-4); eps_spin.setMinimum(0.0); eps_spin.setSpecialValueText(''); eps_spin.setValue(0.0); eps_spin.setFixedWidth(120)
+        itmax = QSpinBox(); itmax.setRange(1,1000); itmax.setMinimum(0); itmax.setSpecialValueText(''); itmax.setValue(0); itmax.setFixedWidth(100)
+        p_row.addLayout(make_col('Intervalo inferior (xi)', xi_spin))
+        p_row.addLayout(make_col('Intervalo superior (xu)', xu_spin))
+        p_row.addLayout(make_col('Error de convergencia (ε)', eps_spin))
+        p_row.addLayout(make_col('Iter máx', itmax))
+        rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos'); rand_btn.setObjectName('btnSecondary'); p_row.addWidget(rand_btn)
+        calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
+
+        self.center_layout.addWidget(wrap)
+        def calc():
+            try:
+                expr_text = expr_edit.text().strip()
+                if not expr_text:
+                    self.push_error('Escribe una expresión para f(x).'); return
+                def _is_empty(sp):
+                    return (sp.specialValueText()=='' and sp.value()==sp.minimum())
+                if any(_is_empty(sp) for sp in (xi_spin, xu_spin, eps_spin, itmax)):
+                    self.push_error('Completa xi, xu, ε e iter máx.'); return
+                x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, 'numpy')
+                xi = float(xi_spin.value()); xu = float(xu_spin.value())
+                if not (xi < xu):
+                    self.push_error('Debe cumplirse xi < xu.'); return
+                yi = float(f(xi)); yu = float(f(xu))
+                if not all(np.isfinite([yi, yu])):
+                    self.push_error('f(xi) o f(xu) no es válido.'); return
+                if yi * yu > 0:
+                    self.push_error('No hay cambio de signo en [xi, xu].'); return
+                eps_text = eps_spin.text().strip(); eps = float(eps_spin.value()); max_iter = int(itmax.value())
+                if max_iter <= 0:
+                    self.push_error('Iteraciones máximas debe ser > 0.'); return
+                rows = []; xr_old = None; xi_c, xu_c, yi_c, yu_c = xi, xu, yi, yu
+                for it in range(1, max_iter+1):
+                    xr = 0.5*(xi_c + xu_c); yr = float(f(xr))
+                    Ea = 0.0 if xr_old is None else (abs((xr - xr_old)/xr) if xr != 0 else abs(xr - xr_old))
+                    rows.append((it, xi_c, xu_c, xr, Ea, yi_c, yu_c, yr))
+                    if xr_old is not None and Ea <= eps:
+                        break
+                    if yi_c * yr < 0:
+                        xu_c, yu_c = xr, yr
+                    else:
+                        xi_c, yi_c = xr, yr
+                    xr_old = xr
+                self._push_bisect_summary_card(expr_text, xi, xu, rows, eps_text)
+                self._show_bisect_dialog(expr_text, xi, xu, rows, eps_text)
+            except Exception as e:
+                self.push_error(str(e))
+        calc_btn.clicked.connect(calc)
+        def fill_random():
+            try:
+                x = _SYM_symbols('x')
+                def build_expr_text():
+                    choice = np.random.choice(['poly','sin','poly_sin','exp'])
+                    if choice == 'poly':
+                        deg = int(np.random.randint(2,5)); coeffs = list(np.random.randint(-5,6,size=deg+1))
+                        while coeffs[0] == 0:
+                            coeffs[0] = int(np.random.randint(-5,6))
+                        terms=[]; p=deg
+                        for c in coeffs:
+                            if p>1: terms.append(f"{c}*x**{p}")
+                            elif p==1: terms.append(f"{c}*x")
+                            else: terms.append(f"{c}")
+                            p-=1
+                        return ' + '.join(terms).replace('+ -','- ')
+                    elif choice == 'sin':
+                        a=int(np.random.randint(1,4)); b=int(np.random.randint(1,4)); d=int(np.random.randint(-2,3)); return f"{a}*sin({b}*x) + {d}"
+                    elif choice == 'poly_sin':
+                        a=int(np.random.randint(-3,4)); b=int(np.random.randint(1,4)); c=int(np.random.randint(-2,3)); d=int(np.random.randint(-2,3));
+                        if a==0: a=1; return f"{a}*x**2 + {b}*sin(x) + {c}*x + {d}"
+                    else:
+                        a=int(np.random.randint(1,4)); b=float(np.random.choice([0.3,0.5,1.0])); cst=int(np.random.randint(0,4)); return f"{a}*exp({b}*x) - {cst}"
+                for _ in range(12):
+                    expr_text = build_expr_text(); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, 'numpy')
+                    xs = np.linspace(-5.0,5.0,400); ys = np.asarray(f(xs), dtype=float); finite = np.isfinite(ys); found=False
+                    for i in range(len(xs)-1):
+                        if not (finite[i] and finite[i+1]): continue
+                        if ys[i] == 0:
+                            xi_val = float(xs[i] - 0.5*(xs[1]-xs[0])); xu_val = float(xs[i] + 0.5*(xs[1]-xs[0])); found=True; break
+                        if ys[i]*ys[i+1] < 0:
+                            xi_val = float(xs[i]); xu_val = float(xs[i+1]); found=True; break
+                    if found:
+                        eps_val = float(np.random.choice([1e-2,5e-3,1e-3,5e-4,1e-4])); it_val = int(np.random.randint(18,45))
+                        expr_edit.setText(expr_text); xi_spin.setValue(xi_val); xu_spin.setValue(xu_val); eps_spin.setValue(eps_val); itmax.setValue(it_val); return
+                expr_edit.setText('x**3 - x - 2'); xi_spin.setValue(1.0); xu_spin.setValue(2.0); eps_spin.setValue(1e-4); itmax.setValue(25)
+            except Exception as e:
+                self.push_error(str(e))
+        rand_btn.clicked.connect(fill_random)
+
+    def _push_bisect_summary_card(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
+        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        title = QLabel('<b>Método de bisección</b>'); lay.addWidget(title)
+        formula = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
+        lay.addWidget(formula)
+        if rows:
+            n = len(rows)
+            xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
+            sgn = '+' if xr >= 0 else ''
+            # Tres líneas solicitadas envueltas en QFrame con estilo
+            def add_frame_label(text: str):
+                fr = QFrame(); fr.setObjectName('resultFrame')
+                vl = QVBoxLayout(fr); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
+                lab = QLabel(text); lab.setStyleSheet("color:#ddd; font-size:12pt;")
+                vl.addWidget(lab)
+                lay.addWidget(fr)
+            add_frame_label(f"El método CONVERGE en <b>{n}</b> iteraciones.")
+            add_frame_label(f"LA RAÍZ ES: <b>{sgn}{xr:.6f}</b> | Error (Ea): <b>{ea*100:.2f}%</b>")
+            tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
+            add_frame_label(f"Error raíz |f(r)|: <b>{residual:.6g}</b> | Tolerancia: <b>{tol_show}</b>")
+        # Actions
+        row = QHBoxLayout(); lay.addLayout(row)
+        btn_open = QPushButton('🔍 Ver detalles…'); btn_open.setObjectName('btnSecondary'); row.addWidget(btn_open)
+        btn_delete = QPushButton('🗑️ Quitar'); btn_delete.setObjectName('btnSecondary'); row.addWidget(btn_delete); row.addStretch(1)
+
+        def _open():
+            self._show_bisect_dialog(expr_text, xi, xu, rows, eps_text)
+        def _remove():
+            card.setParent(None)
+            if card in self._result_widgets:
+                self._result_widgets.remove(card)
+        btn_open.clicked.connect(_open)
+        btn_delete.clicked.connect(_remove)
+        self.right_layout.addWidget(card)
+        self._result_widgets.append(card)
+
+    def _show_bisect_dialog(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
+        try:
+            dlg = BisectionResultDialog(expr_text, xi, xu, rows, eps_text, self)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            self._dialogs.append(dlg)
+            def _cleanup():
+                if dlg in self._dialogs:
+                    self._dialogs.remove(dlg)
+            dlg.destroyed.connect(lambda *_: _cleanup())
+            dlg.show()
+        except Exception as e:
+            self.push_error(str(e))
+
+    # -------------------------------
+    # Método de Falsa Posición (Regla Falsa)
+    # -------------------------------
+    def show_false_position(self):
+        self.current_view = 'false_position'
+        self.center_title.setText('Método de Falsa Posición (Regla Falsa)')
+        self.clear_center()
         box = QVBoxLayout(); box.setContentsMargins(8, 4, 8, 6); box.setSpacing(6)
         wrap = QWidget(); wrap.setLayout(box)
-        # Limitar ancho de esta vista para dejar más espacio a resultados a la derecha
         wrap.setMaximumWidth(720)
 
         # Function input
@@ -994,15 +1156,12 @@ class MatrixQtApp(QMainWindow):
         lbl_fn = QLabel('f(x) =')
         lbl_fn.setStyleSheet(f"font-family: {MATH_FONT_STACK}; font-size:14px;")
         fn_row.addWidget(lbl_fn)
-        # Campo de función sin valor por defecto
         expr_edit = QLineEdit(""); expr_edit.setPlaceholderText("Expresión en x, p.ej. x**3 - x - 2")
         expr_edit.setStyleSheet(f"font-family: {MATH_FONT_STACK}; font-size:13px;")
         expr_edit.setFixedHeight(28)
         fn_row.addWidget(expr_edit, 1)
 
-        # (WYSIWYG retirado) — eliminamos el recuadro informativo para ahorrar espacio
-
-        # Teclado matemático compacto justo debajo de la función
+        # Teclado matemático
         keys_panel = QWidget(); kb = QGridLayout(keys_panel)
         kb.setContentsMargins(0, 4, 0, 0); kb.setHorizontalSpacing(6); kb.setVerticalSpacing(6)
         box.addWidget(keys_panel)
@@ -1023,19 +1182,16 @@ class MatrixQtApp(QMainWindow):
                     expr_edit.setCursorPosition(expr_edit.cursorPosition()-1)
             btn.clicked.connect(on_click)
 
-        # Fila funciones/símbolos (8 columnas)
         row = 0
         for idx,(t,i) in enumerate([
             ('x','x'), ('x^2','**2'), ('x^3','**3'), ('^','**'), ('(','('), (')',')'), ('|x|','Abs()'), ('√','sqrt()')
         ]):
             add_key(t,i,row,idx)
-        # Fila trig/log/const
         row = 1
         for idx,(t,i) in enumerate([
             ('sen','sin()'), ('cos','cos()'), ('tg','tan()'), ('ln','ln()'), ('log','log()'), ('exp','exp()'), ('π','pi'), ('e','E')
         ]):
             add_key(t,i,row,idx)
-        # Números y operaciones en 4 columnas
         for r, cols in enumerate([
             [('7','7'),('8','8'),('9','9'),('÷','/')],
             [('4','4'),('5','5'),('6','6'),('×','*')],
@@ -1049,40 +1205,27 @@ class MatrixQtApp(QMainWindow):
         fmt_lbl.setStyleSheet('color:#9aa4aa; font-size:12px;')
         box.addWidget(fmt_lbl)
 
-        # Parameters — diseño compacto con etiquetas arriba y sin valores por defecto
+        # Parámetros
         p_row = QHBoxLayout(); p_row.setSpacing(10); box.addLayout(p_row)
         def make_col(label_text, widget):
-            col = QVBoxLayout();
-            lab = QLabel(label_text); lab.setStyleSheet('color:#9aa4aa; font-size:12px;')
-            col.addWidget(lab)
-            col.addWidget(widget)
-            return col
+            col = QVBoxLayout(); lab = QLabel(label_text); lab.setStyleSheet('color:#9aa4aa; font-size:12px;')
+            col.addWidget(lab); col.addWidget(widget); return col
 
-        # xi
         xi_spin = TrimDoubleSpinBox(); xi_spin.setDecimals(8); xi_spin.setRange(-1e12, 1e12)
         xi_spin.setSpecialValueText(''); xi_spin.setValue(xi_spin.minimum()); xi_spin.setFixedWidth(120)
         p_row.addLayout(make_col('Intervalo inferior (xi)', xi_spin))
-        # xu
         xu_spin = TrimDoubleSpinBox(); xu_spin.setDecimals(8); xu_spin.setRange(-1e12, 1e12)
         xu_spin.setSpecialValueText(''); xu_spin.setValue(xu_spin.minimum()); xu_spin.setFixedWidth(120)
         p_row.addLayout(make_col('Intervalo superior (xu)', xu_spin))
-        # epsilon
         eps_spin = TrimDoubleSpinBox(); eps_spin.setDecimals(8); eps_spin.setRange(1e-12, 1.0); eps_spin.setSingleStep(1e-4)
         eps_spin.setMinimum(0.0); eps_spin.setSpecialValueText(''); eps_spin.setValue(0.0); eps_spin.setFixedWidth(120)
         p_row.addLayout(make_col('Error de convergencia (ε)', eps_spin))
-        # iteraciones
         itmax = QSpinBox(); itmax.setRange(1, 1000); itmax.setMinimum(0); itmax.setSpecialValueText(''); itmax.setValue(0); itmax.setFixedWidth(100)
         p_row.addLayout(make_col('Iter máx', itmax))
-        # botones a la derecha
-        rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos')
+        rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos'); rand_btn.setObjectName('btnSecondary')
         p_row.addWidget(rand_btn)
-        calc_btn = QPushButton('⚙️ Calcular'); p_row.addWidget(calc_btn)
+        calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
 
-        # (Vista previa f(xi), f(xu) retirada a petición del usuario)
-
-        # (Botón 'Buscar intervalo' retirado a petición del usuario)
-
-        # Host for results will go to right panel as a card
         self.center_layout.addWidget(wrap)
 
         def calc():
@@ -1090,7 +1233,6 @@ class MatrixQtApp(QMainWindow):
                 expr_text = expr_edit.text().strip()
                 if not expr_text:
                     self.push_error('Escribe una expresión para f(x).'); return
-                # Validar que los campos numéricos no estén "vacíos"
                 def _is_empty_spin(sp):
                     return (sp.specialValueText()=='' and sp.value()==sp.minimum())
                 if any([_is_empty_spin(x) for x in (xi_spin, xu_spin, eps_spin, itmax)]):
@@ -1106,48 +1248,52 @@ class MatrixQtApp(QMainWindow):
                     self.push_error('f(xi) o f(xu) no es válido. Revisa la expresión/intervalo.'); return
                 if yi * yu > 0:
                     self.push_error('No hay cambio de signo en [xi, xu]. Elige otro intervalo.'); return
+                eps_text = eps_spin.text().strip()
                 eps = float(eps_spin.value()); max_iter = int(itmax.value())
                 if max_iter <= 0:
                     self.push_error('Iteraciones máximas debe ser > 0.'); return
+
                 rows = []  # (iter, xi, xu, xr, Ea, yi, yu, yr)
-                xr_old = None
                 xi_c, xu_c, yi_c, yu_c = xi, xu, yi, yu
+                xr_old = None
                 for it in range(1, max_iter+1):
-                    xr = 0.5*(xi_c + xu_c)
+                    denom = (yi_c - yu_c)
+                    if denom == 0:
+                        # intervalo degenerado; detenemos
+                        break
+                    xr = xu_c - yu_c * ((xi_c - xu_c) / denom)
                     yr = float(f(xr))
-                    Ea = 0.0 if xr_old is None else abs(xr - xr_old)
+                    if xr_old is None:
+                        Ea = 0.0
+                    else:
+                        Ea = abs((xr - xr_old) / xr) if xr != 0 else abs(xr - xr_old)
                     rows.append((it, xi_c, xu_c, xr, Ea, yi_c, yu_c, yr))
                     if xr_old is not None and Ea <= eps:
                         break
-                    # Decide subinterval
+                    # Actualizar intervalo por regla falsa
                     if yi_c * yr < 0:
                         xu_c, yu_c = xr, yr
                     else:
                         xi_c, yi_c = xr, yr
                     xr_old = xr
 
-                # Build summary card and open detailed dialog
-                self._push_bisect_summary_card(expr_text, xi, xu, rows)
-                self._show_bisect_dialog(expr_text, xi, xu, rows)
+                self._push_falsepos_summary_card(expr_text, xi, xu, rows, eps_text)
+                self._show_falsepos_dialog(expr_text, xi, xu, rows, eps_text)
             except Exception as e:
                 self.push_error(str(e))
 
         calc_btn.clicked.connect(calc)
 
-        # --- Generador aleatorio coherente ---
         def fill_random():
             try:
                 x = _SYM_symbols('x')
-
                 def build_expr_text():
-                    # Seleccionamos un tipo de función sencillo y robusto
                     choice = np.random.choice(['poly', 'sin', 'poly_sin', 'exp'])
                     if choice == 'poly':
                         deg = int(np.random.randint(2, 5))
                         coeffs = list(np.random.randint(-5, 6, size=deg+1))
                         while coeffs[0] == 0:
                             coeffs[0] = int(np.random.randint(-5, 6))
-                        # Construir string: a*x**n + b*x**(n-1) + ... + c
                         terms = []
                         p = deg
                         for c in coeffs:
@@ -1166,12 +1312,11 @@ class MatrixQtApp(QMainWindow):
                         a = int(np.random.randint(-3, 4)); b = int(np.random.randint(1, 4)); c = int(np.random.randint(-2, 3)); d = int(np.random.randint(-2, 3))
                         if a == 0: a = 1
                         return f"{a}*x**2 + {b}*sin(x) + {c}*x + {d}"
-                    else:  # 'exp'
+                    else:
                         a = int(np.random.randint(1, 4)); b = float(np.random.choice([0.3, 0.5, 1.0]))
                         cst = int(np.random.randint(0, 4))
                         return f"{a}*exp({b}*x) - {cst}"
 
-                # Intentamos varias veces hasta lograr cambio de signo en [-5, 5]
                 for _ in range(12):
                     expr_text = build_expr_text()
                     expr = _SYM_sympify(expr_text)
@@ -1195,7 +1340,6 @@ class MatrixQtApp(QMainWindow):
                             found = True
                             break
                     if found:
-                        # Elegimos epsilon razonable y máx iteraciones
                         eps_val = float(np.random.choice([1e-2, 5e-3, 1e-3, 5e-4, 1e-4]))
                         it_val = int(np.random.randint(18, 45))
                         expr_edit.setText(expr_text)
@@ -1204,7 +1348,7 @@ class MatrixQtApp(QMainWindow):
                         eps_spin.setValue(eps_val)
                         itmax.setValue(it_val)
                         return
-                # Fallback conocido
+                # Fallback
                 expr_edit.setText("x**3 - x - 2")
                 xi_spin.setValue(1.0)
                 xu_spin.setValue(2.0)
@@ -1215,25 +1359,31 @@ class MatrixQtApp(QMainWindow):
 
         rand_btn.clicked.connect(fill_random)
 
-    def _push_bisect_summary_card(self, expr_text: str, xi: float, xu: float, rows):
+    def _push_falsepos_summary_card(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
         card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
-        title = QLabel('<b>Método de bisección</b>'); lay.addWidget(title)
+        title = QLabel('<b>Falsa Posición</b>'); lay.addWidget(title)
         formula = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
         lay.addWidget(formula)
         if rows:
             n = len(rows)
             xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
             sgn = '+' if xr >= 0 else ''
-            summary = QLabel(f"El método converge en <b>{n}</b> iteraciones.<br>LA RAÍZ ES: <b>{sgn}{xr:.6f}</b>")
-            lay.addWidget(summary)
+            l1 = QLabel(f"El método CONVERGE en <b>{n}</b> iteraciones.")
+            l2 = QLabel(f"LA RAÍZ ES: <b>{sgn}{xr:.6f}</b> | Error (Ea): <b>{ea*100:.2f}%</b>")
+            tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
+            l3 = QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b> | Tolerancia: <b>{tol_show}</b>")
+            for w in (l1, l2, l3):
+                w.setStyleSheet("color:#ddd;")
+                lay.addWidget(w)
 
-        # Actions
         row = QHBoxLayout(); lay.addLayout(row)
         btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
         btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
 
         def _open():
-            self._show_bisect_dialog(expr_text, xi, xu, rows)
+            self._show_falsepos_dialog(expr_text, xi, xu, rows, eps_text)
         def _remove():
             card.setParent(None)
             if card in self._result_widgets:
@@ -1243,9 +1393,9 @@ class MatrixQtApp(QMainWindow):
         self.right_layout.addWidget(card)
         self._result_widgets.append(card)
 
-    def _show_bisect_dialog(self, expr_text: str, xi: float, xu: float, rows):
+    def _show_falsepos_dialog(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
         try:
-            dlg = BisectionResultDialog(expr_text, xi, xu, rows, self)
+            dlg = FalsePositionResultDialog(expr_text, xi, xu, rows, eps_text, self)
             dlg.setAttribute(Qt.WA_DeleteOnClose, True)
             self._dialogs.append(dlg)
             def _cleanup():
@@ -1255,6 +1405,68 @@ class MatrixQtApp(QMainWindow):
             dlg.show()
         except Exception as e:
             self.push_error(str(e))
+
+class FalsePositionResultDialog(QDialog):
+    def __init__(self, expr_text: str, xi: float, xu: float, rows, epsilon_text: str | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Método de Falsa Posición — Detalles')
+        self.resize(960, 640)
+
+        lay = QVBoxLayout(self)
+        title = QLabel('<b>Método de falsa posición</b>'); lay.addWidget(title)
+        header = QWidget(); grid = QGridLayout(header)
+        grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(4)
+        grid.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>"), 0, 0, 1, 4)
+        if rows:
+            n = len(rows)
+            xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
+            sgn = '+' if xr >= 0 else ''
+            grid.addWidget(QLabel(f"Iteraciones: <b>{n}</b>"), 1, 0)
+            grid.addWidget(QLabel(f"Raíz: <b>{sgn}{xr:.6f}</b>"), 1, 1)
+            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), 1, 2)
+            grid.addWidget(QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b>"), 1, 3)
+            if epsilon_text is not None and epsilon_text != '':
+                grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), 2, 0)
+        for i in range(grid.count()):
+            w = grid.itemAt(i).widget()
+            if isinstance(w, QLabel):
+                w.setStyleSheet("color:#ddd;")
+        lay.addWidget(header)
+
+        tbl = QTableWidget(); lay.addWidget(tbl)
+        headers = ['iteración','xi','xu','xr','Ea','yi','yu','yr']
+        tbl.setColumnCount(len(headers)); tbl.setHorizontalHeaderLabels(headers)
+        tbl.setRowCount(len(rows))
+        def fmt(v):
+            return ('+' if v>=0 else '') + f"{v:.6f}"
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row):
+                item = QTableWidgetItem(fmt(v) if isinstance(v, float) or isinstance(v, np.floating) else str(v))
+                item.setTextAlignment(Qt.AlignRight|Qt.AlignVCenter)
+                tbl.setItem(r,c,item)
+        tbl.resizeColumnsToContents()
+        tbl.setAlternatingRowColors(True)
+        tbl.setStyleSheet(f"QTableWidget::item{{font-family:{MATH_FONT_STACK}; padding:4px;}}")
+
+        try:
+            fig = Figure(figsize=(6,3.5), dpi=100)
+            ax = fig.add_subplot(111)
+            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, 'numpy')
+            xs = np.linspace(xi, xu, 400)
+            ys = fcall(xs)
+            ax.axhline(0, color='#666', lw=1)
+            ax.plot(xs, ys, color='#4fc3f7', label='f(x)')
+            if rows:
+                xr = rows[-1][3]; yr = rows[-1][7]
+                ax.plot([xr],[yr],'o', color='#e05d5d', label='xr')
+            ax.set_xlabel('x'); ax.set_ylabel('f(x)'); ax.grid(True, linestyle='--', alpha=0.3)
+            ax.legend(frameon=False)
+            canvas = FigureCanvasQTAgg(fig)
+            lay.addWidget(canvas)
+        except Exception:
+            pass
 
 
 # +++++++++++++++++++++++++++
@@ -1385,6 +1597,16 @@ def run():
         except Exception:
             pass
     app = QApplication(sys.argv)
+    try:
+        import qdarktheme
+        # Tema oscuro moderno. Podemos personalizar paleta si luego es necesario.
+        qdarktheme.setup_theme(theme='dark')
+    except Exception:
+        pass
+    try:
+        app.setFont(QFont("Segoe UI", 10))
+    except Exception:
+        pass
 
     # Icono global para que Windows muestre el logo en la barra de tareas y miniaturas
     try:
