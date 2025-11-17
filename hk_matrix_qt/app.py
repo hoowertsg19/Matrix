@@ -1,8 +1,14 @@
 from __future__ import annotations
 import sys
 import os
+import html
 from PySide6.QtGui import QFontDatabase, QFont
-from sympy import symbols as _SYM_symbols, sympify as _SYM_sympify, lambdify as _SYM_lambdify
+from sympy import (
+    symbols as _SYM_symbols,
+    sympify as _SYM_sympify,
+    lambdify as _SYM_lambdify,
+    diff as _SYM_diff,
+)
 import matplotlib as mpl
 # Robust dark style activation (some minimal installs may not expose mpl.style)
 try:
@@ -31,6 +37,35 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 import numpy as np
 from sympy import Matrix as SMatrix
 
+
+def _safe_sec(x):
+    return 1.0 / np.cos(x)
+
+
+def _safe_csc(x):
+    return 1.0 / np.sin(x)
+
+
+def _safe_cot(x):
+    return 1.0 / np.tan(x)
+
+
+_LAMBDA_EXTRA_FUNCS = {
+    'Abs': np.abs,
+    'sec': _safe_sec,
+    'csc': _safe_csc,
+    'cot': _safe_cot,
+    'cotg': _safe_cot,
+    'sech': lambda x: 1.0 / np.cosh(x),
+    'csch': lambda x: 1.0 / np.sinh(x),
+    'coth': lambda x: 1.0 / np.tanh(x),
+    'asec': lambda x: np.arccos(1.0 / x),
+    'acsc': lambda x: np.arcsin(1.0 / x),
+    'acot': lambda x: np.arctan(1.0 / x),
+}
+
+_LAMBDA_MODULES = [_LAMBDA_EXTRA_FUNCS, 'numpy']
+
 from hk_matrix.logic.core import (
     fmt_matrix, fmt_num,
     add_steps, sub_steps, multiply_steps,
@@ -38,17 +73,19 @@ from hk_matrix.logic.core import (
     transpose_steps, inverse_steps,
     determinant_steps, cramer_steps,
 )
-from PySide6.QtCore import Qt, QTimer, QEasingCurve, QPropertyAnimation
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QPropertyAnimation, QUrl, QLocale
 from PySide6.QtGui import (
-    QIcon, QColor, QKeySequence, QShortcut, QPixmap, QClipboard
+    QIcon, QColor, QKeySequence, QShortcut, QPixmap, QClipboard, QDesktopServices
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QSpinBox, QLabel, QTableWidget, QTableWidgetItem, QLineEdit,
     QListWidget, QListWidgetItem, QComboBox, QSplitter, QScrollArea,
     QDialog, QAbstractItemView, QCheckBox, QDoubleSpinBox, QToolButton,
-    QProgressBar, QFrame, QGraphicsDropShadowEffect
+    QProgressBar, QFrame, QGraphicsDropShadowEffect, QStackedWidget,
+    QSizePolicy
 )
+from urllib.parse import quote_plus as _url_quote_plus
 
 # Tipografía matemática monoespaciada utilizada en tablas y fórmulas sencillas
 MATH_FONT_STACK = "'Consolas','DejaVu Sans Mono','Courier New',monospace"
@@ -56,6 +93,10 @@ MATH_FONT_STACK = "'Consolas','DejaVu Sans Mono','Courier New',monospace"
 
 class TrimDoubleSpinBox(QDoubleSpinBox):
     """QDoubleSpinBox que evita notación científica y ceros de relleno al mostrar."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setLocale(QLocale.c())  # fuerza separador decimal '.'
+
     def textFromValue(self, value: float) -> str:  # type: ignore[override]
         # Representación con número de decimales configurado y sin ceros innecesarios
         try:
@@ -68,6 +109,14 @@ class TrimDoubleSpinBox(QDoubleSpinBox):
             return s
         except Exception:
             return super().textFromValue(value)
+
+    def validate(self, text: str, pos: int):  # type: ignore[override]
+        if ',' in text and '.' not in text:
+            text = text.replace(',', '.')
+        return super().validate(text, pos)
+
+    def valueFromText(self, text: str) -> float:  # type: ignore[override]
+        return super().valueFromText(text.replace(',', '.'))
 
 
 class MatrixTable(QTableWidget):
@@ -311,7 +360,7 @@ class BisectionResultDialog(QDialog):
         try:
             fig = Figure(figsize=(6,3.5), dpi=100)
             ax = fig.add_subplot(111)
-            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, 'numpy')
+            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
             xs = np.linspace(xi, xu, 400)
             ys = fcall(xs)
             ax.axhline(0, color='#666', lw=1)
@@ -322,6 +371,7 @@ class BisectionResultDialog(QDialog):
             ax.set_xlabel('x'); ax.set_ylabel('f(x)'); ax.grid(True, linestyle='--', alpha=0.3)
             ax.legend(frameon=False)
             canvas = FigureCanvasQTAgg(fig)
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             lay.addWidget(canvas)
         except Exception:
             pass
@@ -358,6 +408,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_cramer = QPushButton('📐 Método de Cramer'); sidebar.addWidget(self.btn_cramer)
         self.btn_bis = QPushButton('📉 Bisección'); sidebar.addWidget(self.btn_bis)
         self.btn_fp = QPushButton('📈 Falsa posición'); sidebar.addWidget(self.btn_fp)
+        self.btn_newton = QPushButton('⚡ Newton-Raphson'); sidebar.addWidget(self.btn_newton)
         sidebar.addStretch(1)
 
         # Center and Right using splitter
@@ -369,10 +420,15 @@ class MatrixQtApp(QMainWindow):
         cgrid.setContentsMargins(0, 0, 0, 0)
         cgrid.setSpacing(12)
         self.center_title = QLabel(''); self.center_title.setObjectName('pageTitle'); cgrid.addWidget(self.center_title)
-        self.center_body = QWidget(); self.center_layout = QVBoxLayout(self.center_body)
+        self.center_scroll = QScrollArea(); self.center_scroll.setWidgetResizable(True)
+        self.center_scroll.setObjectName('centerScroll')
+        self.center_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.center_body = QWidget()
+        self.center_layout = QVBoxLayout(self.center_body)
         self.center_layout.setContentsMargins(0, 0, 0, 0)
-        self.center_layout.setSpacing(12)
-        cgrid.addWidget(self.center_body, 1)
+        self.center_layout.setSpacing(16)
+        self.center_scroll.setWidget(self.center_body)
+        cgrid.addWidget(self.center_scroll, 1)
 
         # Right results panel in scroll area
         self.right_scroll = QScrollArea(); self.right_scroll.setWidgetResizable(True)
@@ -382,6 +438,8 @@ class MatrixQtApp(QMainWindow):
         self.right_scroll.setWidget(self.right_container)
         splitter.addWidget(self.right_scroll)
         splitter.setSizes([850, 430])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
 
         # connect
         self.btn_ops.clicked.connect(self.show_ops)
@@ -393,6 +451,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_cramer.clicked.connect(self.show_cramer)
         self.btn_bis.clicked.connect(self.show_bisection)
         self.btn_fp.clicked.connect(self.show_false_position)
+        self.btn_newton.clicked.connect(self.show_newton)
 
         # state
         self.current_view = None
@@ -525,13 +584,47 @@ class MatrixQtApp(QMainWindow):
                 padding: 12px;
                 margin: 4px 0;
             }}
+            QFrame#methodCard {{
+                background-color: #1b1d21;
+                border: 1px solid #2c2f36;
+                border-radius: 14px;
+            }}
+            QLabel#cardTitle {{
+                font-size: 15px;
+                font-weight: 600;
+                color: #e6eef2;
+            }}
+            QLabel#helperLabel {{
+                color: #9aa4aa;
+                font-size: 12px;
+                line-height: 150%;
+            }}
+            QWidget#mathKeyboard QToolButton {{
+                background: #2b2d31;
+                border: 1px solid #3a3d41;
+                border-radius: 6px;
+                font-family: {MATH_FONT_STACK};
+                font-size: 13px;
+                color: #dbe3e8;
+            }}
+            QWidget#mathKeyboard QToolButton:hover {{
+                border-color: {accent};
+            }}
+            QWidget#mathKeyboard QToolButton:pressed {{
+                background: #1f2225;
+            }}
+            QScrollArea#centerScroll {{
+                border: none;
+            }}
         """)
 
     # helpers
     def clear_center(self):
-        for i in reversed(range(self.center_layout.count())):
-            w = self.center_layout.itemAt(i).widget()
-            if w: w.setParent(None)
+        while self.center_layout.count():
+            item = self.center_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
 
     def clear_results(self):
         for i in reversed(range(self.right_layout.count())):
@@ -594,6 +687,90 @@ class MatrixQtApp(QMainWindow):
         self.right_layout.insertWidget(0, card)
         self._result_widgets.append(card)
         return card
+
+    def _build_method_card(self, title: str, subtitle: str | None = None):
+        card = QFrame(); card.setObjectName('methodCard')
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 18)
+        layout.setSpacing(10)
+        header = QLabel(f"<b>{title}</b>"); header.setObjectName('cardTitle')
+        layout.addWidget(header)
+        if subtitle:
+            sub = QLabel(subtitle); sub.setObjectName('helperLabel'); sub.setWordWrap(True)
+            layout.addWidget(sub)
+        return card, layout
+
+    def _build_math_keyboard(self, target_edit: QLineEdit) -> QWidget:
+        panel = QWidget(); panel.setObjectName('mathKeyboard')
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+
+        def add_key(text: str, insert: str, row: int, col: int):
+            btn = QToolButton(); btn.setText(text)
+            btn.setMinimumSize(36, 32)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setToolTip(insert)
+            btn.clicked.connect(lambda _=None, payload=insert: self._insert_text(target_edit, payload))
+            grid.addWidget(btn, row, col)
+
+        rows = [
+            [('x', 'x'), ('x^2', '**2'), ('x^3', '**3'), ('^', '**'), ('(', '('), (')', ')'), ('|x|', 'Abs()'), ('√', 'sqrt()')],
+            [('sen', 'sin()'), ('cos', 'cos()'), ('tg', 'tan()'), ('sec', 'sec()'), ('csc', 'csc()'), ('cot', 'cot()'), ('ln', 'ln()'), ('log', 'log()')],
+            [('exp', 'exp()'), ('π', 'pi'), ('e', 'E'), ('sinh', 'sinh()'), ('cosh', 'cosh()'), ('tanh', 'tanh()'), ('sech', 'sech()'), ('csch', 'csch()')],
+        ]
+        for row_idx, row in enumerate(rows):
+            for col_idx, (text, insert) in enumerate(row):
+                add_key(text, insert, row_idx, col_idx)
+        return panel
+
+    def _insert_text(self, target: QLineEdit, payload: str):
+        cursor_pos = target.cursorPosition()
+        target.insert(payload)
+        if payload.endswith('()'):
+            target.setCursorPosition(cursor_pos + len(payload) - 1)
+
+    def _build_format_hint_label(self, extra: str | None = None) -> QLabel:
+        base = ('Formato: usa ** para potencias y * para multiplicar. '
+                'Funciones: sin, cos, tan, sec, csc, cot, exp, log, Abs, π, E.')
+        if extra:
+            base = f"{base} {extra}"
+        lbl = QLabel(base); lbl.setObjectName('helperLabel'); lbl.setWordWrap(True)
+        return lbl
+
+    def _build_equation_examples_label(self) -> QLabel:
+        lbl = QLabel("Ej.: x**3 - 4*x + sec(x/2) mezcla polinomio y trigonometría.")
+        lbl.setObjectName('helperLabel'); lbl.setWordWrap(True)
+        return lbl
+
+    def _build_geogebra_url(self, expr_text: str, x0: float | None = None, root: float | None = None) -> str:
+        expr_clean = expr_text.replace('^', '**')
+        commands = [f"f(x) = {expr_clean}"]
+        def _finite(val: float | None) -> bool:
+            return val is not None and np.isfinite(val)
+        if _finite(x0):
+            commands.append(f"x0 = {x0}")
+            commands.append("P = (x0, f(x0))")
+            commands.append("Q = (x0, 0)")
+            commands.append("L = Line(P, Q)")
+            commands.append("SetLineStyle(L, 2)")
+            commands.append("SetPointStyle(P, 2)")
+            commands.append("SetColor(P, 0.85, 0.33, 0.31)")
+        if _finite(root):
+            commands.append(f"root = {root}")
+            commands.append("R = (root, 0)")
+            commands.append("SetPointStyle(R, 2)")
+            commands.append("SetColor(R, 0.2, 0.76, 0.8)")
+        cmd_block = ','.join(f'"{cmd}"' for cmd in commands)
+        script = f"Execute[{{{cmd_block}}}]"
+        encoded = _url_quote_plus(script)
+        return f"https://www.geogebra.org/graphing?command={encoded}&lang=es"
+
+    def _open_geogebra(self, expr_text: str, x0: float | None = None, root: float | None = None):
+        url = QUrl(self._build_geogebra_url(expr_text, x0, root))
+        QDesktopServices.openUrl(url)
 
     # views
     def show_ops(self):
@@ -960,9 +1137,10 @@ class MatrixQtApp(QMainWindow):
         self.current_view = 'bisection'
         self.center_title.setText('Método de Bisección')
         self.clear_center()
-        wrap = QWidget(); box = QVBoxLayout(wrap)
-        box.setContentsMargins(8, 4, 8, 6); box.setSpacing(6)
-        wrap.setMaximumWidth(720)
+        panel, box = self._build_method_card(
+            'Configura f(x) e intervalo',
+            'El método requiere un intervalo [xi, xu] con cambio de signo (f(xi)·f(xu) < 0).'
+        )
 
         fn_row = QHBoxLayout(); box.addLayout(fn_row)
         lbl_fn = QLabel('f(x) ='); lbl_fn.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:14px;")
@@ -972,28 +1150,9 @@ class MatrixQtApp(QMainWindow):
         expr_edit.setFixedHeight(28)
         fn_row.addWidget(expr_edit, 1)
 
-        keys_panel = QWidget(); kb = QGridLayout(keys_panel)
-        kb.setContentsMargins(0,4,0,0); kb.setHorizontalSpacing(6); kb.setVerticalSpacing(6)
-        box.addWidget(keys_panel)
-        def add_key(text, insert, r, c):
-            btn = QToolButton(); btn.setText(text); btn.setFixedSize(40,34)
-            btn.setStyleSheet("QToolButton{background:#2b2d31; border:1px solid #3a3d41; border-radius:6px; font-family:"+MATH_FONT_STACK+"; font-size:13px;}QToolButton:hover{border-color:#0099a8}QToolButton:pressed{background:#1f2225}")
-            btn.setToolTip(insert); kb.addWidget(btn, r, c)
-            def on_click():
-                expr_edit.insert(insert)
-                if insert.endswith('()'):
-                    expr_edit.setCursorPosition(expr_edit.cursorPosition()-1)
-            btn.clicked.connect(on_click)
-        for idx,(t,i) in enumerate([('x','x'),('x^2','**2'),('x^3','**3'),('^','**'),('(','('),(')',')'),('|x|','Abs()'),('√','sqrt()')]):
-            add_key(t,i,0,idx)
-        for idx,(t,i) in enumerate([('sen','sin()'),('cos','cos()'),('tg','tan()'),('ln','ln()'),('log','log()'),('exp','exp()'),('π','pi'),('e','E')]):
-            add_key(t,i,1,idx)
-        for r, cols in enumerate([[('7','7'),('8','8'),('9','9'),('÷','/')],[('4','4'),('5','5'),('6','6'),('×','*')],[('1','1'),('2','2'),('3','3'),('−','-')],[('0','0'),('.','.'),(', ',','),('+','+')]], start=2):
-            for c,(t,i) in enumerate(cols):
-                add_key(t,i,r,c)
-
-        fmt_lbl = QLabel('Formato: usa ** para potencias; funciones SymPy disponibles (sin, cos, exp, log, ...).')
-        fmt_lbl.setStyleSheet('color:#9aa4aa; font-size:12px;'); box.addWidget(fmt_lbl)
+        box.addWidget(self._build_math_keyboard(expr_edit))
+        box.addWidget(self._build_format_hint_label('Recuerda validar el signo de f(x) en los extremos.'))
+        box.addWidget(self._build_equation_examples_label())
 
         p_row = QHBoxLayout(); p_row.setSpacing(12); box.addLayout(p_row)
         def make_col(label_text, widget):
@@ -1010,7 +1169,7 @@ class MatrixQtApp(QMainWindow):
         rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos'); rand_btn.setObjectName('btnSecondary'); p_row.addWidget(rand_btn)
         calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
 
-        self.center_layout.addWidget(wrap)
+        self.center_layout.addWidget(panel)
         def calc():
             try:
                 expr_text = expr_edit.text().strip()
@@ -1020,7 +1179,7 @@ class MatrixQtApp(QMainWindow):
                     return (sp.specialValueText()=='' and sp.value()==sp.minimum())
                 if any(_is_empty(sp) for sp in (xi_spin, xu_spin, eps_spin, itmax)):
                     self.push_error('Completa xi, xu, ε e iter máx.'); return
-                x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, 'numpy')
+                x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
                 xi = float(xi_spin.value()); xu = float(xu_spin.value())
                 if not (xi < xu):
                     self.push_error('Debe cumplirse xi < xu.'); return
@@ -1073,7 +1232,7 @@ class MatrixQtApp(QMainWindow):
                     else:
                         a=int(np.random.randint(1,4)); b=float(np.random.choice([0.3,0.5,1.0])); cst=int(np.random.randint(0,4)); return f"{a}*exp({b}*x) - {cst}"
                 for _ in range(12):
-                    expr_text = build_expr_text(); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, 'numpy')
+                    expr_text = build_expr_text(); expr = _SYM_sympify(expr_text); f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
                     xs = np.linspace(-5.0,5.0,400); ys = np.asarray(f(xs), dtype=float); finite = np.isfinite(ys); found=False
                     for i in range(len(xs)-1):
                         if not (finite[i] and finite[i+1]): continue
@@ -1147,9 +1306,10 @@ class MatrixQtApp(QMainWindow):
         self.current_view = 'false_position'
         self.center_title.setText('Método de Falsa Posición (Regla Falsa)')
         self.clear_center()
-        box = QVBoxLayout(); box.setContentsMargins(8, 4, 8, 6); box.setSpacing(6)
-        wrap = QWidget(); wrap.setLayout(box)
-        wrap.setMaximumWidth(720)
+        wrap, box = self._build_method_card(
+            'Configura f(x) e intervalo',
+            'Selecciona un intervalo [xi, xu] con f(xi)·f(xu) < 0 para aplicar Regla Falsa.'
+        )
 
         # Function input
         fn_row = QHBoxLayout(); box.addLayout(fn_row)
@@ -1161,49 +1321,9 @@ class MatrixQtApp(QMainWindow):
         expr_edit.setFixedHeight(28)
         fn_row.addWidget(expr_edit, 1)
 
-        # Teclado matemático
-        keys_panel = QWidget(); kb = QGridLayout(keys_panel)
-        kb.setContentsMargins(0, 4, 0, 0); kb.setHorizontalSpacing(6); kb.setVerticalSpacing(6)
-        box.addWidget(keys_panel)
-
-        def add_key(text, insert, r, c):
-            btn = QToolButton(); btn.setText(text)
-            btn.setFixedSize(40, 34)
-            btn.setStyleSheet(
-                "QToolButton{background:#2b2d31; border:1px solid #3a3d41; border-radius:6px; font-family:"+MATH_FONT_STACK+"; font-size:13px;}"
-                "QToolButton:hover{border-color:#0099a8}"
-                "QToolButton:pressed{background:#1f2225}"
-            )
-            btn.setToolTip(insert)
-            kb.addWidget(btn, r, c)
-            def on_click():
-                expr_edit.insert(insert)
-                if insert.endswith('()'):
-                    expr_edit.setCursorPosition(expr_edit.cursorPosition()-1)
-            btn.clicked.connect(on_click)
-
-        row = 0
-        for idx,(t,i) in enumerate([
-            ('x','x'), ('x^2','**2'), ('x^3','**3'), ('^','**'), ('(','('), (')',')'), ('|x|','Abs()'), ('√','sqrt()')
-        ]):
-            add_key(t,i,row,idx)
-        row = 1
-        for idx,(t,i) in enumerate([
-            ('sen','sin()'), ('cos','cos()'), ('tg','tan()'), ('ln','ln()'), ('log','log()'), ('exp','exp()'), ('π','pi'), ('e','E')
-        ]):
-            add_key(t,i,row,idx)
-        for r, cols in enumerate([
-            [('7','7'),('8','8'),('9','9'),('÷','/')],
-            [('4','4'),('5','5'),('6','6'),('×','*')],
-            [('1','1'),('2','2'),('3','3'),('−','-')],
-            [('0','0'),('.','.'),(', ',','),('+','+')],
-        ], start=2):
-            for c,(t,i) in enumerate(cols):
-                add_key(t,i,r,c)
-
-        fmt_lbl = QLabel('Formato: usa ** para potencias; puedes escribir funciones SymPy (sin, cos, exp, log, ...).')
-        fmt_lbl.setStyleSheet('color:#9aa4aa; font-size:12px;')
-        box.addWidget(fmt_lbl)
+        box.addWidget(self._build_math_keyboard(expr_edit))
+        box.addWidget(self._build_format_hint_label('Secante, cosecante y cotangente están disponibles mediante sec(x), csc(x) y cot(x).'))
+        box.addWidget(self._build_equation_examples_label())
 
         # Parámetros
         p_row = QHBoxLayout(); p_row.setSpacing(10); box.addLayout(p_row)
@@ -1239,7 +1359,7 @@ class MatrixQtApp(QMainWindow):
                     self.push_error('Completa xi, xu, ε e iter máx.'); return
                 x = _SYM_symbols('x')
                 expr = _SYM_sympify(expr_text)
-                f = _SYM_lambdify(x, expr, 'numpy')
+                f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
                 xi = float(xi_spin.value()); xu = float(xu_spin.value())
                 if not (xi < xu):
                     self.push_error('Debe cumplirse xi < xu.'); return
@@ -1320,7 +1440,7 @@ class MatrixQtApp(QMainWindow):
                 for _ in range(12):
                     expr_text = build_expr_text()
                     expr = _SYM_sympify(expr_text)
-                    f = _SYM_lambdify(x, expr, 'numpy')
+                    f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
                     xs = np.linspace(-5.0, 5.0, 400)
                     ys = f(xs)
                     ys = np.asarray(ys, dtype=float)
@@ -1352,6 +1472,284 @@ class MatrixQtApp(QMainWindow):
                 expr_edit.setText("x**3 - x - 2")
                 xi_spin.setValue(1.0)
                 xu_spin.setValue(2.0)
+                eps_spin.setValue(1e-4)
+                itmax.setValue(25)
+            except Exception as e:
+                self.push_error(str(e))
+
+        rand_btn.clicked.connect(fill_random)
+
+    def show_newton(self):
+        self.current_view = 'newton'
+        self.center_title.setText('Método de Newton-Raphson')
+        self.clear_center()
+
+        config_card, box = self._build_method_card(
+            'Configura f(x) y parámetros',
+            'Newton-Raphson necesita un valor inicial x₀ cercano a la raíz y una derivada distinta de cero.'
+        )
+
+        fn_row = QHBoxLayout(); box.addLayout(fn_row)
+        lbl_fn = QLabel('f(x) ='); lbl_fn.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:14px;")
+        fn_row.addWidget(lbl_fn)
+        expr_edit = QLineEdit(''); expr_edit.setPlaceholderText('Ejemplo: x**3 - x - 2')
+        expr_edit.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:13px;")
+        expr_edit.setFixedHeight(28)
+        fn_row.addWidget(expr_edit, 1)
+
+        box.addWidget(self._build_math_keyboard(expr_edit))
+        box.addWidget(self._build_format_hint_label('Asegúrate de que f\'(x) no se anule en el vecindario de la raíz.'))
+        box.addWidget(self._build_equation_examples_label())
+
+        p_grid = QGridLayout(); p_grid.setHorizontalSpacing(16); p_grid.setVerticalSpacing(10); box.addLayout(p_grid)
+        p_grid.setColumnStretch(0, 1)
+        p_grid.setColumnStretch(1, 1)
+        def add_field(idx: int, label_text: str, widget: QWidget):
+            wrap = QWidget(); wrap_layout = QVBoxLayout(wrap); wrap_layout.setContentsMargins(0,0,0,0); wrap_layout.setSpacing(4)
+            lab = QLabel(label_text); lab.setStyleSheet('color:#9aa4aa; font-size:12px;')
+            wrap_layout.addWidget(lab)
+            wrap_layout.addWidget(widget)
+            row = idx // 2
+            col = idx % 2
+            p_grid.addWidget(wrap, row, col)
+
+        x0_spin = TrimDoubleSpinBox(); x0_spin.setDecimals(8); x0_spin.setRange(-1e12, 1e12)
+        x0_spin.setSpecialValueText(''); x0_spin.setValue(x0_spin.minimum())
+        x0_spin.setMinimumWidth(160)
+        add_field(0, 'Valor inicial (x₀)', x0_spin)
+
+        eps_spin = TrimDoubleSpinBox(); eps_spin.setDecimals(8); eps_spin.setRange(1e-12, 1.0)
+        eps_spin.setSingleStep(1e-4); eps_spin.setMinimum(0.0)
+        eps_spin.setSpecialValueText(''); eps_spin.setValue(0.0)
+        add_field(1, 'Error de convergencia (ε)', eps_spin)
+
+        itmax = QSpinBox(); itmax.setRange(1, 1000); itmax.setMinimum(0)
+        itmax.setSpecialValueText(''); itmax.setValue(0)
+        add_field(2, 'Iter máx', itmax)
+
+        buttons_wrap = QWidget(); btn_layout = QHBoxLayout(buttons_wrap); btn_layout.setContentsMargins(0,0,0,0); btn_layout.setSpacing(12)
+        rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función y x₀ sugeridos'); rand_btn.setObjectName('btnSecondary')
+        calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary')
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(rand_btn)
+        btn_layout.addWidget(calc_btn)
+        p_grid.addWidget(buttons_wrap, 2, 0, 1, 2)
+
+        self.center_layout.addWidget(config_card)
+
+        deriv_card, deriv_box = self._build_method_card(
+            'Derivada de f(x)',
+            'Puedes dejar que Matrix calcule f\'(x) automáticamente o activar el modo manual cuando necesites control total.'
+        )
+        mode_switch = QCheckBox("Ingresar f'(x) manualmente")
+        deriv_box.addWidget(mode_switch)
+
+        stack = QStackedWidget()
+        stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        deriv_box.addWidget(stack)
+
+        auto_page = QWidget(); auto_layout = QVBoxLayout(auto_page); auto_layout.setContentsMargins(0, 0, 0, 0)
+        auto_layout.setSpacing(6)
+        auto_preview = QLabel("f'(x) = —"); auto_preview.setStyleSheet(f"font-family:{MATH_FONT_STACK}; background:#15171a; border:1px solid #2b2d31; border-radius:8px; padding:10px;")
+        auto_preview.setTextFormat(Qt.RichText)
+        auto_preview.setWordWrap(True)
+        auto_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        auto_layout.addWidget(auto_preview)
+        auto_layout.addWidget(self._build_format_hint_label('El motor usa SymPy.diff, así que obtienes la derivada simbólica exacta.'))
+
+        manual_page = QWidget(); manual_layout = QVBoxLayout(manual_page); manual_layout.setContentsMargins(0,0,0,0)
+        manual_layout.setSpacing(6)
+        manual_edit = QLineEdit(''); manual_edit.setPlaceholderText("Escribe aquí f'(x)")
+        manual_edit.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:13px;")
+        manual_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        manual_layout.addWidget(manual_edit)
+        manual_layout.addWidget(self._build_math_keyboard(manual_edit))
+        manual_hint = QLabel("Ejemplo manual: 3*x**2 - sec(x/2). Usa la misma sintaxis que en f(x)."); manual_hint.setObjectName('helperLabel'); manual_hint.setWordWrap(True)
+        manual_layout.addWidget(manual_hint)
+        copy_btn = QPushButton('⬇️ Copiar derivada automática al campo'); copy_btn.setObjectName('btnSecondary')
+        manual_layout.addWidget(copy_btn, 0)
+
+        stack.addWidget(auto_page)
+        stack.addWidget(manual_page)
+
+        def toggle_manual(checked: bool):
+            stack.setCurrentIndex(1 if checked else 0)
+        mode_switch.toggled.connect(toggle_manual)
+        toggle_manual(False)
+
+        self.center_layout.addWidget(deriv_card)
+
+        auto_state = {'expr': None, 'text': ''}
+
+        def refresh_auto():
+            text = expr_edit.text().strip()
+            if not text:
+                auto_state['expr'] = None
+                auto_state['text'] = ''
+                auto_preview.setText("f'(x) = —")
+                return
+            try:
+                x = _SYM_symbols('x')
+                expr = _SYM_sympify(text)
+                derivative = _SYM_diff(expr, x)
+                auto_state['expr'] = derivative
+                auto_state['text'] = str(derivative)
+                escaped = html.escape(auto_state['text'])
+                auto_preview.setText(f"f'(x) = <span style=\"font-family:{MATH_FONT_STACK}; color:#d6f4ff;\">{escaped}</span>")
+            except Exception:
+                auto_state['expr'] = None
+                auto_state['text'] = ''
+                auto_preview.setText("f'(x) = (expresión inválida)")
+
+        expr_edit.textChanged.connect(refresh_auto)
+        refresh_auto()
+
+        def copy_auto_to_manual():
+            if auto_state['text']:
+                manual_edit.setText(auto_state['text'])
+        copy_btn.clicked.connect(copy_auto_to_manual)
+
+        def _is_empty(spin: TrimDoubleSpinBox | QSpinBox):
+            if isinstance(spin, TrimDoubleSpinBox):
+                return spin.specialValueText() == '' and spin.value() == spin.minimum()
+            return spin.specialValueText() == '' and spin.value() == spin.minimum()
+
+        def calc():
+            try:
+                expr_text = expr_edit.text().strip()
+                if not expr_text:
+                    self.push_error('Escribe una expresión para f(x).'); return
+                if any(_is_empty(sp) for sp in (x0_spin, eps_spin, itmax)):
+                    self.push_error('Completa x₀, ε e iter máx.'); return
+                x = _SYM_symbols('x')
+                expr = _SYM_sympify(expr_text)
+                f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+                if mode_switch.isChecked():
+                    d_text = manual_edit.text().strip()
+                    if not d_text:
+                        self.push_error('Ingresa la expresión de f\'(x) en modo manual.'); return
+                    d_expr = _SYM_sympify(d_text)
+                else:
+                    if auto_state['expr'] is None:
+                        auto_state['expr'] = _SYM_diff(expr, x)
+                        auto_state['text'] = str(auto_state['expr'])
+                    d_expr = auto_state['expr']
+                df = _SYM_lambdify(x, d_expr, _LAMBDA_MODULES)
+                x0_value = float(x0_spin.value())
+                if not np.isfinite(x0_value):
+                    self.push_error('x₀ debe ser un número finito.'); return
+                x_curr = x0_value
+                eps = float(eps_spin.value()); eps_text = eps_spin.text().strip()
+                max_iter = int(itmax.value())
+                if eps <= 0:
+                    self.push_error('El error objetivo ε debe ser > 0.'); return
+                if max_iter <= 0:
+                    self.push_error('Iteraciones máximas debe ser > 0.'); return
+                rows = []
+                root_estimate = x_curr
+                residual_next = abs(float(f(x_curr)))
+                for it in range(1, max_iter + 1):
+                    fx = float(f(x_curr))
+                    if not np.isfinite(fx):
+                        raise ValueError('f(x) no es finito en la iteración actual. Revisa x₀ o la función.')
+                    dfx = float(df(x_curr))
+                    if dfx == 0:
+                        raise ValueError("f'(x) = 0 produce una división no válida. Prueba con otro x₀.")
+                    x_next = x_curr - fx / dfx
+                    ea = 0.0 if it == 1 else (abs((x_next - x_curr) / x_next) if x_next != 0 else abs(x_next - x_curr))
+                    residual_next = abs(float(f(x_next)))
+                    rows.append((it, x_curr, fx, dfx, x_next, ea, residual_next))
+                    root_estimate = x_next
+                    if residual_next <= eps or (it > 1 and ea <= eps):
+                        break
+                    x_curr = x_next
+                if not rows:
+                    self.push_error('No se pudo generar ninguna iteración. Ajusta los parámetros.'); return
+                manual_mode = mode_switch.isChecked()
+                self._push_newton_summary_card(
+                    expr_text,
+                    str(d_expr),
+                    rows,
+                    eps_text,
+                    root_estimate,
+                    residual_next,
+                    manual_mode,
+                    x0_value
+                )
+                self._show_newton_dialog(
+                    expr_text,
+                    str(d_expr),
+                    rows,
+                    eps_text,
+                    manual_mode,
+                    root_estimate,
+                    x0_value
+                )
+            except Exception as e:
+                self.push_error(str(e))
+
+        calc_btn.clicked.connect(calc)
+
+        def fill_random():
+            try:
+                x = _SYM_symbols('x')
+                def build_expr_text():
+                    choice = np.random.choice(['poly','sin','poly_sin','exp'])
+                    if choice == 'poly':
+                        deg = int(np.random.randint(2, 5))
+                        coeffs = list(np.random.randint(-5, 6, size=deg+1))
+                        while coeffs[0] == 0:
+                            coeffs[0] = int(np.random.randint(-5, 6))
+                        terms = []; power = deg
+                        for c in coeffs:
+                            if power > 1:
+                                terms.append(f"{c}*x**{power}")
+                            elif power == 1:
+                                terms.append(f"{c}*x")
+                            else:
+                                terms.append(f"{c}")
+                            power -= 1
+                        return ' + '.join(terms).replace('+ -', '- ')
+                    if choice == 'sin':
+                        a = int(np.random.randint(1, 4)); b = int(np.random.randint(1, 4)); d = int(np.random.randint(-2, 3))
+                        return f"{a}*sin({b}*x) + {d}"
+                    if choice == 'poly_sin':
+                        a = int(np.random.randint(-3, 4)); b = int(np.random.randint(1, 4)); c = int(np.random.randint(-2, 3)); d = int(np.random.randint(-2, 3))
+                        if a == 0:
+                            a = 1
+                        return f"{a}*x**2 + {b}*sin(x) + {c}*x + {d}"
+                    a = int(np.random.randint(1, 4)); b = float(np.random.choice([0.3, 0.5, 1.0])); cst = int(np.random.randint(0, 4))
+                    return f"{a}*exp({b}*x) - {cst}"
+
+                for _ in range(12):
+                    expr_text = build_expr_text()
+                    expr = _SYM_sympify(expr_text)
+                    f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+                    xs = np.linspace(-5.0, 5.0, 400)
+                    ys = np.asarray(f(xs), dtype=float)
+                    finite = np.isfinite(ys)
+                    found = False
+                    for i in range(len(xs)-1):
+                        if not (finite[i] and finite[i+1]):
+                            continue
+                        if ys[i] == 0:
+                            x0_val = float(xs[i])
+                            found = True
+                            break
+                        if ys[i] * ys[i+1] < 0:
+                            x0_val = float(0.5 * (xs[i] + xs[i+1]))
+                            found = True
+                            break
+                    if found:
+                        eps_val = float(np.random.choice([1e-2, 5e-3, 1e-3, 5e-4, 1e-4]))
+                        it_val = int(np.random.randint(12, 35))
+                        expr_edit.setText(expr_text)
+                        x0_spin.setValue(x0_val)
+                        eps_spin.setValue(eps_val)
+                        itmax.setValue(it_val)
+                        return
+                expr_edit.setText('x**3 - x - 2')
+                x0_spin.setValue(1.5)
                 eps_spin.setValue(1e-4)
                 itmax.setValue(25)
             except Exception as e:
@@ -1406,6 +1804,89 @@ class MatrixQtApp(QMainWindow):
         except Exception as e:
             self.push_error(str(e))
 
+    def _push_newton_summary_card(self, expr_text: str, deriv_text: str, rows, eps_text: str | None, root_estimate: float, residual: float, manual_derivative: bool, x0_value: float | None):
+        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        lay.addWidget(QLabel('<b>Newton-Raphson</b>'))
+        expr_html = html.escape(expr_text)
+        deriv_html = html.escape(deriv_text)
+        lay.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_html}</span>"))
+        lay.addWidget(QLabel(f"f'(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{deriv_html}</span>"))
+        if rows:
+            try:
+                fig = Figure(figsize=(4.8, 2.2), dpi=110)
+                ax = fig.add_subplot(111)
+                x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+                xs_iter = [row[1] for row in rows] + [rows[-1][4]]
+                if xs_iter:
+                    min_x, max_x = min(xs_iter), max(xs_iter)
+                    span = max(1.0, abs(max_x - min_x))
+                    pad = span * 0.5
+                    xs = np.linspace(min_x - pad, max_x + pad, 300)
+                else:
+                    xs = np.linspace(-5.0, 5.0, 300)
+                ys = np.asarray(fcall(xs), dtype=float)
+                ax.axhline(0, color='#666', lw=1)
+                ax.plot(xs, ys, color='#4fc3f7')
+                points = np.array([row[1] for row in rows], dtype=float)
+                ax.scatter(points, np.zeros_like(points), color='#ffd54f', marker='x')
+                ax.set_xlabel('x'); ax.set_ylabel('f(x)'); ax.grid(True, linestyle='--', alpha=0.25)
+                fig.tight_layout(pad=0.6)
+                canvas = FigureCanvasQTAgg(fig)
+                canvas.setMinimumHeight(170)
+                canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                lay.addWidget(canvas)
+            except Exception:
+                pass
+        link = QPushButton('🌐 Ver gráfica completa'); link.setObjectName('btnSecondary')
+        link.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lay.addWidget(link)
+        if rows:
+            iterations = len(rows)
+            ea = float(rows[-1][5])
+            info_frame = QFrame(); info_frame.setObjectName('resultFrame'); info_layout = QVBoxLayout(info_frame)
+            info_layout.setContentsMargins(8, 4, 8, 4)
+            info_layout.addWidget(QLabel(f"Iteraciones: <b>{iterations}</b>"))
+            info_layout.addWidget(QLabel(f"Raíz aproximada: <b>{root_estimate:.6f}</b>"))
+            info_layout.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b> | |f(x)|: <b>{residual:.6g}</b>"))
+            tol_show = eps_text if eps_text else ''
+            info_layout.addWidget(QLabel(f"Tolerancia: <b>{tol_show}</b> | Derivada: <b>{'Manual' if manual_derivative else 'Automática'}</b>"))
+            for i in range(info_layout.count()):
+                w = info_layout.itemAt(i).widget()
+                if isinstance(w, QLabel):
+                    w.setStyleSheet('color:#ddd;')
+            lay.addWidget(info_frame)
+        row = QHBoxLayout(); lay.addLayout(row)
+        btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
+        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
+
+        def _open():
+            self._show_newton_dialog(expr_text, deriv_text, rows, eps_text, manual_derivative, root_estimate, x0_value)
+        def _geogebra():
+            self._open_geogebra(expr_text, x0_value, root_estimate)
+        def _remove():
+            card.setParent(None)
+            if card in self._result_widgets:
+                self._result_widgets.remove(card)
+        btn_open.clicked.connect(_open)
+        btn_delete.clicked.connect(_remove)
+        link.clicked.connect(_geogebra)
+        self.right_layout.addWidget(card)
+        self._result_widgets.append(card)
+
+    def _show_newton_dialog(self, expr_text: str, deriv_text: str, rows, eps_text: str | None, manual_derivative: bool, root_estimate: float | None, x0_value: float | None):
+        try:
+            geo_url = self._build_geogebra_url(expr_text, x0_value, root_estimate)
+            dlg = NewtonResultDialog(expr_text, deriv_text, rows, eps_text, manual_derivative, geo_url, self)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            self._dialogs.append(dlg)
+            def _cleanup():
+                if dlg in self._dialogs:
+                    self._dialogs.remove(dlg)
+            dlg.destroyed.connect(lambda *_: _cleanup())
+            dlg.show()
+        except Exception as e:
+            self.push_error(str(e))
+
 class FalsePositionResultDialog(QDialog):
     def __init__(self, expr_text: str, xi: float, xu: float, rows, epsilon_text: str | None = None, parent=None):
         super().__init__(parent)
@@ -1414,28 +1895,57 @@ class FalsePositionResultDialog(QDialog):
 
         lay = QVBoxLayout(self)
         title = QLabel('<b>Método de falsa posición</b>'); lay.addWidget(title)
+
+        # 1) Ecuación sola (encabezado)
+        eq_label = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
+        eq_label.setTextFormat(Qt.RichText)
+        eq_label.setStyleSheet("color:#ddd;")
+        lay.addWidget(eq_label)
+
+        # 2) Gráfica
+        canvas = None
+        try:
+            fig = Figure(figsize=(6,3.5), dpi=100)
+            ax = fig.add_subplot(111)
+            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+            xs = np.linspace(xi, xu, 400)
+            ys = fcall(xs)
+            ax.axhline(0, color='#666', lw=1)
+            ax.plot(xs, ys, color='#4fc3f7', label='f(x)')
+            if rows:
+                xr = rows[-1][3]; yr = rows[-1][7]
+                ax.plot([xr],[yr],'o', color='#e05d5d', label='xr')
+            ax.set_xlabel('x'); ax.set_ylabel('f(x)'); ax.grid(True, linestyle='--', alpha=0.3)
+            ax.legend(frameon=False)
+            canvas = FigureCanvasQTAgg(fig)
+            lay.addWidget(canvas)
+        except Exception:
+            canvas = None
+
+        # 3) Intervalos, errores, tolerancia + tabla
         header = QWidget(); grid = QGridLayout(header)
         grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(4)
-        grid.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>"), 0, 0, 1, 4)
+        metrics_row = 0
         if rows:
             n = len(rows)
             xr = float(rows[-1][3])
             ea = float(rows[-1][4])
             residual = abs(float(rows[-1][7]))
             sgn = '+' if xr >= 0 else ''
-            grid.addWidget(QLabel(f"Iteraciones: <b>{n}</b>"), 1, 0)
-            grid.addWidget(QLabel(f"Raíz: <b>{sgn}{xr:.6f}</b>"), 1, 1)
-            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), 1, 2)
-            grid.addWidget(QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b>"), 1, 3)
-            if epsilon_text is not None and epsilon_text != '':
-                grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), 2, 0)
+            grid.addWidget(QLabel(f"Iteraciones: <b>{n}</b>"), metrics_row, 0)
+            grid.addWidget(QLabel(f"Raíz: <b>{sgn}{xr:.6f}</b>"), metrics_row, 1)
+            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), metrics_row, 2)
+            grid.addWidget(QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b>"), metrics_row, 3)
+            metrics_row += 1
+        if epsilon_text is not None and epsilon_text != '':
+            grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), metrics_row, 0)
+            metrics_row += 1
         for i in range(grid.count()):
             w = grid.itemAt(i).widget()
             if isinstance(w, QLabel):
                 w.setStyleSheet("color:#ddd;")
-        lay.addWidget(header)
 
-        tbl = QTableWidget(); lay.addWidget(tbl)
+        tbl = QTableWidget()
         headers = ['iteración','xi','xu','xr','Ea','yi','yu','yr']
         tbl.setColumnCount(len(headers)); tbl.setHorizontalHeaderLabels(headers)
         tbl.setRowCount(len(rows))
@@ -1450,23 +1960,99 @@ class FalsePositionResultDialog(QDialog):
         tbl.setAlternatingRowColors(True)
         tbl.setStyleSheet(f"QTableWidget::item{{font-family:{MATH_FONT_STACK}; padding:4px;}}")
 
+        lay.addWidget(header)
+        lay.addWidget(tbl)
+
+
+class NewtonResultDialog(QDialog):
+    def __init__(self, expr_text: str, deriv_text: str, rows, epsilon_text: str | None, manual_derivative: bool, geogebra_url: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Método de Newton-Raphson — Detalles')
+        self.resize(980, 660)
+        self._geo_url = geogebra_url
+
+        lay = QVBoxLayout(self)
+        title = QLabel('<b>Método de Newton-Raphson</b>'); lay.addWidget(title)
+
+        eq_label = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{html.escape(expr_text)}</span>")
+        eq_label.setTextFormat(Qt.RichText); eq_label.setStyleSheet('color:#ddd;')
+        lay.addWidget(eq_label)
+        deriv_label = QLabel(f"f'(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{html.escape(deriv_text)}</span> ({'manual' if manual_derivative else 'automática'})")
+        deriv_label.setTextFormat(Qt.RichText); deriv_label.setStyleSheet('color:#bbb;')
+        lay.addWidget(deriv_label)
+
+        canvas = None
         try:
-            fig = Figure(figsize=(6,3.5), dpi=100)
+            fig = Figure(figsize=(6,3.4), dpi=100)
             ax = fig.add_subplot(111)
-            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, 'numpy')
-            xs = np.linspace(xi, xu, 400)
+            x = _SYM_symbols('x'); expr = _SYM_sympify(expr_text); fcall = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+            xs_iter = [row[1] for row in rows] + ([rows[-1][4]] if rows else [])
+            if xs_iter:
+                min_x, max_x = min(xs_iter), max(xs_iter)
+                span = max(1.0, abs(max_x - min_x))
+                padding = span * 0.5
+                xs = np.linspace(min_x - padding, max_x + padding, 400)
+            else:
+                xs = np.linspace(-5.0, 5.0, 400)
             ys = fcall(xs)
             ax.axhline(0, color='#666', lw=1)
             ax.plot(xs, ys, color='#4fc3f7', label='f(x)')
             if rows:
-                xr = rows[-1][3]; yr = rows[-1][7]
-                ax.plot([xr],[yr],'o', color='#e05d5d', label='xr')
+                xr = rows[-1][4]
+                ax.plot([xr], [0], 'o', color='#e05d5d', label='Raíz aprox.')
+                points = np.array([row[1] for row in rows], dtype=float)
+                ax.scatter(points, np.zeros_like(points), color='#ffd54f', marker='x', label='Iteraciones')
             ax.set_xlabel('x'); ax.set_ylabel('f(x)'); ax.grid(True, linestyle='--', alpha=0.3)
             ax.legend(frameon=False)
             canvas = FigureCanvasQTAgg(fig)
             lay.addWidget(canvas)
         except Exception:
-            pass
+            canvas = None
+
+        metrics = QWidget(); grid = QGridLayout(metrics)
+        grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(4)
+        if rows:
+            iterations = len(rows)
+            xr = float(rows[-1][4])
+            ea = float(rows[-1][5])
+            residual = float(rows[-1][6])
+            grid.addWidget(QLabel(f"Iteraciones: <b>{iterations}</b>"), 0, 0)
+            grid.addWidget(QLabel(f"Raíz aproximada: <b>{xr:.6f}</b>"), 0, 1)
+            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), 1, 0)
+            grid.addWidget(QLabel(f"|f(x)|: <b>{residual:.6g}</b>"), 1, 1)
+        if epsilon_text:
+            grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), 2, 0)
+        for i in range(grid.count()):
+            w = grid.itemAt(i).widget()
+            if isinstance(w, QLabel):
+                w.setStyleSheet('color:#ddd;')
+        lay.addWidget(metrics)
+
+        link_row = QHBoxLayout()
+        link_btn = QPushButton('🌐 Ver gráfica completa'); link_btn.setObjectName('btnSecondary')
+        link_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        link_row.addStretch(1)
+        link_row.addWidget(link_btn)
+        lay.addLayout(link_row)
+
+        tbl = QTableWidget(); columns = ['iteración','x_n','f(x_n)','f\'(x_n)','x_{n+1}','Ea','|f(x_{n+1})|']
+        tbl.setColumnCount(len(columns)); tbl.setHorizontalHeaderLabels(columns)
+        tbl.setRowCount(len(rows))
+        def fmt(v):
+            return ('+' if v >= 0 else '') + f"{v:.6f}"
+        for r, row in enumerate(rows):
+            data = [row[0], row[1], row[2], row[3], row[4], row[5], row[6]]
+            for c, val in enumerate(data):
+                text = fmt(val) if isinstance(val, (float, np.floating)) else str(val)
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                tbl.setItem(r, c, item)
+        tbl.resizeColumnsToContents()
+        tbl.setAlternatingRowColors(True)
+        tbl.setStyleSheet(f"QTableWidget::item{{font-family:{MATH_FONT_STACK}; padding:4px;}}")
+        lay.addWidget(tbl)
+
+        link_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self._geo_url)))
 
 
 # +++++++++++++++++++++++++++
