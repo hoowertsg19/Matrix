@@ -66,6 +66,8 @@ _LAMBDA_EXTRA_FUNCS = {
 
 _LAMBDA_MODULES = [_LAMBDA_EXTRA_FUNCS, 'numpy']
 
+SECANT_DECIMALS = 6
+
 from hk_matrix.logic.core import (
     fmt_matrix, fmt_num,
     add_steps, sub_steps, multiply_steps,
@@ -408,6 +410,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_cramer = QPushButton('📐 Método de Cramer'); sidebar.addWidget(self.btn_cramer)
         self.btn_bis = QPushButton('📉 Bisección'); sidebar.addWidget(self.btn_bis)
         self.btn_fp = QPushButton('📈 Falsa posición'); sidebar.addWidget(self.btn_fp)
+        self.btn_secant = QPushButton('📐 Secante'); sidebar.addWidget(self.btn_secant)
         self.btn_newton = QPushButton('⚡ Newton-Raphson'); sidebar.addWidget(self.btn_newton)
         sidebar.addStretch(1)
 
@@ -451,6 +454,7 @@ class MatrixQtApp(QMainWindow):
         self.btn_cramer.clicked.connect(self.show_cramer)
         self.btn_bis.clicked.connect(self.show_bisection)
         self.btn_fp.clicked.connect(self.show_false_position)
+        self.btn_secant.clicked.connect(self.show_secant)
         self.btn_newton.clicked.connect(self.show_newton)
 
         # state
@@ -1311,6 +1315,10 @@ class MatrixQtApp(QMainWindow):
             'Selecciona un intervalo [xi, xu] con f(xi)·f(xu) < 0 para aplicar Regla Falsa.'
         )
 
+        # Reducir el espacio entre el título y los controles
+        if isinstance(wrap.layout(), QVBoxLayout):
+            wrap.layout().setContentsMargins(20, 8, 20, 18)
+
         # Function input
         fn_row = QHBoxLayout(); box.addLayout(fn_row)
         lbl_fn = QLabel('f(x) =')
@@ -1345,6 +1353,10 @@ class MatrixQtApp(QMainWindow):
         rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos'); rand_btn.setObjectName('btnSecondary')
         p_row.addWidget(rand_btn)
         calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
+
+        error_label = QLabel('')
+        error_label.setStyleSheet('color:#ff9999; font-size:11px;')
+        box.addWidget(error_label)
 
         self.center_layout.addWidget(wrap)
 
@@ -1478,6 +1490,253 @@ class MatrixQtApp(QMainWindow):
                 self.push_error(str(e))
 
         rand_btn.clicked.connect(fill_random)
+
+    # -------------------------------
+    # Método de la Secante
+    # -------------------------------
+    def show_secant(self):
+        self.current_view = 'secant'
+        self.center_title.setText('Método de la Secante')
+        self.clear_center()
+
+        wrap, box = self._build_method_card(
+            'Configura f(x) y valores iniciales',
+            'La secante usa dos aproximaciones iniciales x0 y x1; no exige cambio de signo en f(x).'
+        )
+
+        # Acerca un poco el contenido al título para reducir el espacio
+        if isinstance(wrap.layout(), QVBoxLayout):
+            wrap.layout().setContentsMargins(20, 8, 20, 18)
+
+        fn_row = QHBoxLayout(); box.addLayout(fn_row)
+        lbl_fn = QLabel('f(x) ='); lbl_fn.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:14px;")
+        fn_row.addWidget(lbl_fn)
+        expr_edit = QLineEdit(''); expr_edit.setPlaceholderText('Ejemplo: x**3 - x - 2')
+        expr_edit.setStyleSheet(f"font-family:{MATH_FONT_STACK}; font-size:13px;")
+        expr_edit.setFixedHeight(28)
+        fn_row.addWidget(expr_edit, 1)
+
+        box.addWidget(self._build_math_keyboard(expr_edit))
+        box.addWidget(self._build_format_hint_label('No se requiere que f(x) cambie de signo entre x0 y x1.'))
+        box.addWidget(self._build_equation_examples_label())
+
+        p_row = QHBoxLayout(); p_row.setSpacing(10); box.addLayout(p_row)
+        def make_col(label_text, widget):
+            col = QVBoxLayout(); lbl = QLabel(label_text)
+            lbl.setStyleSheet('font-size:12px;')
+            col.addWidget(lbl)
+            col.addWidget(widget)
+            return col
+
+        x0_spin = TrimDoubleSpinBox(); x0_spin.setDecimals(8); x0_spin.setRange(-1e12, 1e12)
+        x0_spin.setSpecialValueText(''); x0_spin.setValue(x0_spin.minimum()); x0_spin.setFixedWidth(140)
+        p_row.addLayout(make_col('x₀ (primera aproximación)', x0_spin))
+
+        x1_spin = TrimDoubleSpinBox(); x1_spin.setDecimals(8); x1_spin.setRange(-1e12, 1e12)
+        x1_spin.setSpecialValueText(''); x1_spin.setValue(x1_spin.minimum()); x1_spin.setFixedWidth(140)
+        p_row.addLayout(make_col('x₁ (segunda aproximación)', x1_spin))
+
+        eps_spin = TrimDoubleSpinBox(); eps_spin.setDecimals(8); eps_spin.setRange(1e-12, 1.0); eps_spin.setSingleStep(1e-4)
+        eps_spin.setMinimum(0.0); eps_spin.setSpecialValueText(''); eps_spin.setValue(0.0); eps_spin.setFixedWidth(120)
+        p_row.addLayout(make_col('Error de convergencia (ε)', eps_spin))
+
+        itmax = QSpinBox(); itmax.setRange(1, 1000); itmax.setMinimum(0); itmax.setSpecialValueText(''); itmax.setValue(0); itmax.setFixedWidth(100)
+        p_row.addLayout(make_col('Iter máx', itmax))
+
+        rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función y valores iniciales sugeridos'); rand_btn.setObjectName('btnSecondary')
+        p_row.addWidget(rand_btn)
+        calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
+
+        error_label = QLabel('')
+        error_label.setStyleSheet('color:#ff9999; font-size:11px;')
+        box.addWidget(error_label)
+
+        self.center_layout.addWidget(wrap)
+
+        def _is_empty(spin: TrimDoubleSpinBox | QSpinBox):
+            if isinstance(spin, TrimDoubleSpinBox):
+                return spin.specialValueText() == '' and spin.value() == spin.minimum()
+            return spin.specialValueText() == '' and spin.value() == spin.minimum()
+
+        def calc():
+            try:
+                calc_btn.setEnabled(False)
+                error_label.setText('')
+                expr_text = expr_edit.text().strip()
+                if not expr_text:
+                    error_label.setText('Escribe una expresión para f(x).')
+                    return
+                if any(_is_empty(sp) for sp in (x0_spin, x1_spin, eps_spin, itmax)):
+                    error_label.setText('Completa x₀, x₁, ε e iter máx.')
+                    return
+                x = _SYM_symbols('x')
+                expr = _SYM_sympify(expr_text)
+                f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+
+                x0 = float(x0_spin.value()); x1 = float(x1_spin.value())
+                if not (np.isfinite(x0) and np.isfinite(x1)):
+                    error_label.setText('x₀ y x₁ deben ser números finitos.')
+                    return
+                if x0 == x1:
+                    error_label.setText('x₀ y x₁ deben ser distintos para la secante.')
+                    return
+
+                eps = float(eps_spin.value()); eps_text = eps_spin.text().strip()
+                max_iter = int(itmax.value())
+                if eps <= 0:
+                    error_label.setText('El error objetivo ε debe ser > 0.')
+                    return
+                if max_iter <= 0:
+                    error_label.setText('Iteraciones máximas debe ser > 0.')
+                    return
+
+                rows = []
+                x_prev, x_curr = x0, x1
+                root_estimate = x_curr
+                residual = abs(float(f(x_curr)))
+
+                for it in range(1, max_iter + 1):
+                    f_prev = float(f(x_prev))
+                    f_curr = float(f(x_curr))
+                    if not (np.isfinite(f_prev) and np.isfinite(f_curr)):
+                        raise ValueError('f(x) no es finito en la iteración actual. Revisa x₀, x₁ o la función.')
+                    denom = (f_curr - f_prev)
+                    if denom == 0:
+                        raise ValueError('f(x₁) - f(x₀) = 0 produce división no válida. Prueba con otros valores iniciales.')
+                    x_next = x_curr - f_curr * (x_curr - x_prev) / denom
+                    ea = 0.0 if it == 1 else (abs((x_next - x_curr) / x_next) if x_next != 0 else abs(x_next - x_curr))
+                    residual = abs(float(f(x_next)))
+                    rows.append((it, x_prev, x_curr, f_prev, f_curr, x_next, ea, residual))
+                    root_estimate = x_next
+                    if residual <= eps or (it > 1 and ea <= eps):
+                        break
+                    x_prev, x_curr = x_curr, x_next
+
+                if not rows:
+                    self._push_secant_summary_card(expr_text, x0, x1, rows, eps_text, root_estimate, residual, converged=False)
+                    return
+
+                converged = residual <= eps or any(r[6] <= eps for r in rows[1:])
+                self._push_secant_summary_card(expr_text, x0, x1, rows, eps_text, root_estimate, residual, converged=converged)
+                self._show_secant_dialog(expr_text, x0, x1, rows, eps_text)
+            except Exception as e:
+                error_label.setText(str(e))
+            finally:
+                calc_btn.setEnabled(True)
+
+        calc_btn.clicked.connect(calc)
+
+        def fill_random():
+            try:
+                x = _SYM_symbols('x')
+                def build_expr_text():
+                    choice = np.random.choice(['poly','sin','exp'])
+                    if choice == 'poly':
+                        a = int(np.random.randint(-3, 4) or 1)
+                        b = int(np.random.randint(-5, 6))
+                        c = int(np.random.randint(-5, 6))
+                        return f"{a}*x**2 + {b}*x + {c}"
+                    if choice == 'sin':
+                        k = int(np.random.randint(1, 4))
+                        return f"sin({k}*x) - 0.5"
+                    return "exp(x) - 3"
+
+                expr_text = build_expr_text()
+                expr = _SYM_sympify(expr_text)
+                f = _SYM_lambdify(x, expr, _LAMBDA_MODULES)
+                # Buscar dos puntos cercanos con valores distintos
+                x0_val = float(np.random.uniform(-3, 0))
+                x1_val = x0_val + float(np.random.uniform(0.5, 2.0))
+                expr_edit.setText(expr_text)
+                x0_spin.setValue(x0_val)
+                x1_spin.setValue(x1_val)
+                eps_spin.setValue(1e-4)
+                itmax.setValue(30)
+            except Exception:
+                expr_edit.setText('x**3 - x - 2')
+                x0_spin.setValue(1.0)
+                x1_spin.setValue(2.0)
+                eps_spin.setValue(1e-4)
+                itmax.setValue(30)
+
+        rand_btn.clicked.connect(fill_random)
+
+    def mostrar_grafica_secante(self, iteraciones: list[tuple]):
+        """Dibuja opcionalmente la gráfica del método de la secante.
+
+        `iteraciones` es la lista de tuplas
+        (it, x_prev, x_curr, f_prev, f_curr, x_next, ea, residual)
+        ya calculadas en el slot de la secante. Aquí solo se usan
+        para representar gráficamente el proceso.
+        """
+        if not iteraciones:
+            return
+
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np  # por si no está en el ámbito local
+        except Exception:
+            return
+
+        # Extraer datos de iteración
+        iters = np.array([row[0] for row in iteraciones], dtype=float)
+        x_prev = np.array([row[1] for row in iteraciones], dtype=float)
+        x_curr = np.array([row[2] for row in iteraciones], dtype=float)
+        fx_prev = np.array([row[3] for row in iteraciones], dtype=float)
+        fx_curr = np.array([row[4] for row in iteraciones], dtype=float)
+        x_next = np.array([row[5] for row in iteraciones], dtype=float)
+
+        # Ventana para representar f(x) y las rectas secantes
+        fig, (ax_fun, ax_iter) = plt.subplots(1, 2, figsize=(9, 4))
+
+        # Dominio aproximado a partir de las aproximaciones obtenidas
+        xs_all = np.concatenate([x_prev, x_curr, x_next])
+        xmin = float(xs_all.min())
+        xmax = float(xs_all.max())
+        if xmin == xmax:
+            xmin -= 1.0
+            xmax += 1.0
+        margin = 0.15 * (xmax - xmin)
+        xmin -= margin
+        xmax += margin
+
+        # Como aquí no tenemos directamente f(x), aproximamos su forma
+        # con los puntos (x_prev, f_prev) y (x_curr, f_curr) que ya están
+        # evaluados en cada iteración.
+        # Para dar una idea global, usamos todos esos puntos dispersos.
+        ax_fun.scatter(x_prev, fx_prev, s=18, color='#58a6ff', label='f(xₙ₋₁)')
+        ax_fun.scatter(x_curr, fx_curr, s=18, color='#f2cc60', label='f(xₙ)')
+
+        # Dibujar las rectas secantes de cada iteración
+        for xp, xc, fp, fc in zip(x_prev, x_curr, fx_prev, fx_curr):
+            if xc == xp:
+                continue
+            m = (fc - fp) / (xc - xp)
+            xs_line = np.linspace(xp, xc, 2)
+            ys_line = m * (xs_line - xp) + fp
+            ax_fun.plot(xs_line, ys_line, color='#8b949e', alpha=0.8)
+
+        # Marcar la última aproximación de la raíz
+        root_est = float(x_next[-1])
+        ax_fun.axvline(root_est, color='#d18616', linestyle='--', alpha=0.9,
+                       label='aprox. raíz')
+
+        ax_fun.set_xlim(xmin, xmax)
+        ax_fun.set_xlabel('x')
+        ax_fun.set_ylabel('f(x) / rectas secantes')
+        ax_fun.set_title('Secante: función y rectas')
+        ax_fun.grid(True, linestyle='--', alpha=0.3)
+        ax_fun.legend(loc='best', fontsize=8)
+
+        # Segundo panel: evolución de xₙ
+        ax_iter.plot(iters, x_next, marker='o', linestyle='-', color='#58a6ff')
+        ax_iter.set_xlabel('Iteración')
+        ax_iter.set_ylabel('xₙ₊₁')
+        ax_iter.set_title('Evolución de las aproximaciones')
+        ax_iter.grid(True, linestyle='--', alpha=0.4)
+
+        fig.tight_layout()
+        fig.show()
 
     def show_newton(self):
         self.current_view = 'newton'
@@ -1804,6 +2063,56 @@ class MatrixQtApp(QMainWindow):
         except Exception as e:
             self.push_error(str(e))
 
+    def _push_secant_summary_card(self, expr_text: str, x0: float, x1: float, rows, eps_text: str | None, root_estimate: float, residual: float, converged: bool):
+        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        lay.addWidget(QLabel('<b>Método de la Secante</b>'))
+        lay.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{html.escape(expr_text)}</span>"))
+        lay.addWidget(QLabel(f"Valores iniciales: x₀ = {x0:.6f}, x₁ = {x1:.6f}"))
+        if rows:
+            iterations = len(rows)
+            ea = float(rows[-1][6])
+            status_text = "CONVERGE" if converged else "NO CONVERGE (máx. iteraciones alcanzado)"
+            info = QLabel(
+                f"Iteraciones: <b>{iterations}</b> • Estado: <b>{status_text}</b><br>"
+                f"Raíz aproximada = <b>{root_estimate:.6f}</b><br>"
+                f"Error aprox. (Ea) = <b>{ea*100:.2f}%</b><br>"
+                f"Error de la raíz |f(c)| = <b>{residual:.6g}</b>"
+            )
+            info.setStyleSheet('color:#ddd;')
+            lay.addWidget(info)
+            tol_show = eps_text if eps_text else ''
+            tol = QLabel(f"Tolerancia = <b>{tol_show}</b>")
+            tol.setStyleSheet('color:#ddd;')
+            lay.addWidget(tol)
+
+        row = QHBoxLayout(); lay.addLayout(row)
+        btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
+        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
+
+        def _open():
+            self._show_secant_dialog(expr_text, x0, x1, rows, eps_text)
+        def _remove():
+            card.setParent(None)
+            if card in self._result_widgets:
+                self._result_widgets.remove(card)
+        btn_open.clicked.connect(_open)
+        btn_delete.clicked.connect(_remove)
+        self.right_layout.addWidget(card)
+        self._result_widgets.append(card)
+
+    def _show_secant_dialog(self, expr_text: str, x0: float, x1: float, rows, eps_text: str | None = None):
+        try:
+            dlg = SecantResultDialog(expr_text, x0, x1, rows, eps_text, self)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            self._dialogs.append(dlg)
+            def _cleanup():
+                if dlg in self._dialogs:
+                    self._dialogs.remove(dlg)
+            dlg.destroyed.connect(lambda *_: _cleanup())
+            dlg.show()
+        except Exception as e:
+            self.push_error(str(e))
+
     def _push_newton_summary_card(self, expr_text: str, deriv_text: str, rows, eps_text: str | None, root_estimate: float, residual: float, manual_derivative: bool, x0_value: float | None):
         card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
         lay.addWidget(QLabel('<b>Newton-Raphson</b>'))
@@ -1962,6 +2271,82 @@ class FalsePositionResultDialog(QDialog):
 
         lay.addWidget(header)
         lay.addWidget(tbl)
+
+
+class SecantResultDialog(QDialog):
+    def __init__(self, expr_text: str, x0: float, x1: float, rows, epsilon_text: str | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Método de la Secante — Detalles')
+        self.resize(960, 640)
+        self._rows = rows or []
+        self._parent_app = parent
+
+        lay = QVBoxLayout(self)
+        title = QLabel('<b>Método de la Secante</b>'); lay.addWidget(title)
+
+        eq_label = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{html.escape(expr_text)}</span>")
+        eq_label.setTextFormat(Qt.RichText)
+        eq_label.setStyleSheet('color:#ddd;')
+        lay.addWidget(eq_label)
+
+        header = QWidget(); grid = QGridLayout(header)
+        grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(4)
+        metrics_row = 0
+        grid.addWidget(QLabel(f"x₀: <b>{x0:.6f}</b>"), metrics_row, 0)
+        grid.addWidget(QLabel(f"x₁: <b>{x1:.6f}</b>"), metrics_row, 1)
+        if rows:
+            n = len(rows)
+            c = float(rows[-1][5])
+            ea = float(rows[-1][6])
+            residual = float(rows[-1][7])
+            grid.addWidget(QLabel(f"Iteraciones: <b>{n}</b>"), metrics_row, 2)
+            metrics_row += 1
+            grid.addWidget(QLabel(f"Raíz aproximada: <b>{c:.6f}</b>"), metrics_row, 0)
+            grid.addWidget(QLabel(f"Error (Ea): <b>{ea*100:.2f}%</b>"), metrics_row, 1)
+            grid.addWidget(QLabel(f"Error raíz |f(c)|: <b>{residual:.6g}</b>"), metrics_row, 2)
+            metrics_row += 1
+        if epsilon_text is not None and epsilon_text != '':
+            grid.addWidget(QLabel(f"Tolerancia: <b>{epsilon_text}</b>"), metrics_row, 0)
+        for i in range(grid.count()):
+            w = grid.itemAt(i).widget()
+            if isinstance(w, QLabel):
+                w.setStyleSheet('color:#ddd;')
+        lay.addWidget(header)
+
+        # Botón para mostrar gráfica opcionalmente una vez resuelto el ejercicio
+        btn_plot = QPushButton('📈 Ver gráfica')
+        btn_plot.setObjectName('btnSecondary')
+        btn_plot.setEnabled(bool(self._rows))
+        def _show_plot():
+            app = self._parent_app
+            if app is None or not hasattr(app, 'mostrar_grafica_secante'):
+                return
+            try:
+                app.mostrar_grafica_secante(self._rows)
+            except Exception as e:
+                QMessageBox.warning(self, 'Error al mostrar gráfica', str(e))
+        btn_plot.clicked.connect(_show_plot)
+        lay.addWidget(btn_plot)
+
+        tbl = QTableWidget(); lay.addWidget(tbl)
+        headers = ['iteración','x_{n-1}','x_n','f(x_{n-1})','f(x_n)','x_{n+1}','Error aprox. (%)','|f(x_{n+1})|']
+        tbl.setColumnCount(len(headers)); tbl.setHorizontalHeaderLabels(headers)
+        tbl.setRowCount(len(rows))
+        def fmt(v):
+            return ('+' if v >= 0 else '') + f"{v:.{SECANT_DECIMALS}f}"
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row):
+                text = fmt(v) if isinstance(v, (float, np.floating)) else str(v)
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if r == len(rows) - 1:
+                    item.setBackground(QColor(0, 80, 120, 160))
+                    item.setForeground(QColor('#ffffff'))
+                    font = item.font(); font.setBold(True); item.setFont(font)
+                tbl.setItem(r, c, item)
+        tbl.resizeColumnsToContents()
+        tbl.setAlternatingRowColors(True)
+        tbl.setStyleSheet(f"QTableWidget::item{{font-family:{MATH_FONT_STACK}; padding:4px;}}")
 
 
 class NewtonResultDialog(QDialog):
@@ -2210,7 +2595,7 @@ def run():
 
     # Cerrar splash con fade-out y mostrar la app
     def _show_main():
-        w.show()
+        w.showMaximized()
         splash.finish()
     QTimer.singleShot(700, _show_main)  # breve espera para sensación fluida
 
