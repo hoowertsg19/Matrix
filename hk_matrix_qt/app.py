@@ -10,28 +10,6 @@ from sympy import (
     diff as _SYM_diff,
 )
 import matplotlib as mpl
-# Robust dark style activation (some minimal installs may not expose mpl.style)
-try:
-    from matplotlib import style as _mpl_style
-    _mpl_style.use('dark_background')
-except Exception:
-    try:
-        import matplotlib.pyplot as _plt
-        if hasattr(_plt, 'style'):
-            _plt.style.use('dark_background')
-    except Exception:
-        # Fallback: lightly tweak rcParams for dark background feel
-        try:
-            mpl.rcParams['figure.facecolor'] = '#121212'
-            mpl.rcParams['axes.facecolor'] = '#121212'
-            mpl.rcParams['axes.edgecolor'] = '#555555'
-            mpl.rcParams['axes.labelcolor'] = '#dddddd'
-            mpl.rcParams['xtick.color'] = '#cccccc'
-            mpl.rcParams['ytick.color'] = '#cccccc'
-            mpl.rcParams['text.color'] = '#dddddd'
-            mpl.rcParams['grid.color'] = '#444444'
-        except Exception:
-            pass
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 import numpy as np
@@ -68,6 +46,16 @@ _LAMBDA_MODULES = [_LAMBDA_EXTRA_FUNCS, 'numpy']
 
 SECANT_DECIMALS = 6
 
+# -------------------------------
+# Design system base (Fase 1)
+# -------------------------------
+BG_MAIN = "#1e1e2e"          # Fondo principal muy oscuro, azulado
+BG_PANEL = "#252535"         # Paneles ligeramente más claros
+ACCENT_PRIMARY = "#7f5af0"   # Violeta vibrante para acciones principales
+ACCENT_SECONDARY = "#2cb67d" # Verde neón suave para estados OK
+TEXT_PRIMARY = "#fffffe"     # Blanco cálido
+TEXT_MUTED = "#94a1b2"       # Gris suave
+
 from hk_matrix.logic.core import (
     fmt_matrix, fmt_num,
     add_steps, sub_steps, multiply_steps,
@@ -75,7 +63,7 @@ from hk_matrix.logic.core import (
     transpose_steps, inverse_steps,
     determinant_steps, cramer_steps,
 )
-from PySide6.QtCore import Qt, QTimer, QEasingCurve, QPropertyAnimation, QUrl, QLocale
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QPropertyAnimation, QUrl, QLocale, QPoint
 from PySide6.QtGui import (
     QIcon, QColor, QKeySequence, QShortcut, QPixmap, QClipboard, QDesktopServices
 )
@@ -85,12 +73,608 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QComboBox, QSplitter, QScrollArea,
     QDialog, QAbstractItemView, QCheckBox, QDoubleSpinBox, QToolButton,
     QProgressBar, QFrame, QGraphicsDropShadowEffect, QStackedWidget,
-    QSizePolicy
+    QSizePolicy, QMessageBox, QButtonGroup, QGroupBox, QRadioButton
 )
 from urllib.parse import quote_plus as _url_quote_plus
 
 # Tipografía matemática monoespaciada utilizada en tablas y fórmulas sencillas
 MATH_FONT_STACK = "'Consolas','DejaVu Sans Mono','Courier New',monospace"
+
+
+class TitleBar(QWidget):
+    """Barra de título personalizada para la ventana principal."""
+
+    def __init__(self, parent: QMainWindow):
+        super().__init__(parent)
+        self._window = parent
+        self._mouse_pos = QPoint()
+
+        self.setFixedHeight(32)
+        self.setObjectName('titleBar')
+        self.setAutoFillBackground(False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(8)
+
+        # Icono de la app
+        icon_label = QLabel()
+        try:
+            icon = QIcon(_resource_path('logo.png'))
+            pix = icon.pixmap(20, 20)
+            icon_label.setPixmap(pix)
+        except Exception:
+            icon_label.setText('🔢')
+        icon_label.setFixedSize(20, 20)
+        layout.addWidget(icon_label)
+
+        # Título
+        title_label = QLabel('Matrix')
+        title_label.setStyleSheet('color:#ffffff; font-weight:600; letter-spacing:0.5px;')
+        layout.addWidget(title_label)
+
+        layout.addStretch(1)
+
+        def make_btn(text: str, tooltip: str = '') -> QPushButton:
+            btn = QPushButton(text)
+            btn.setFixedSize(32, 22)
+            btn.setFlat(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tooltip)
+            btn.setStyleSheet(
+                "QPushButton{background:transparent; color:#c3c8d4; border:none;}"
+                "QPushButton:hover{background-color:rgba(255,255,255,0.08);}"
+            )
+            return btn
+
+        btn_min = make_btn('−', 'Minimizar')
+        btn_max = make_btn('□', 'Maximizar / Restaurar')
+        btn_close = make_btn('✕', 'Cerrar')
+        btn_close.setStyleSheet(
+            "QPushButton{background:transparent; color:#c3c8d4; border:none;}"
+            "QPushButton:hover{background-color:#ff4b4b; color:#ffffff;}"
+        )
+
+        layout.addWidget(btn_min)
+        layout.addWidget(btn_max)
+        layout.addWidget(btn_close)
+
+        btn_min.clicked.connect(self._on_minimize)
+        btn_max.clicked.connect(self._on_maximize_restore)
+        btn_close.clicked.connect(self._on_close)
+
+        self.setStyleSheet(
+            "#titleBar{background-color:#1e1e2e; border-bottom:1px solid #333333;}"
+        )
+
+    def _on_minimize(self):
+        self._window.showMinimized()
+
+    def _on_maximize_restore(self):
+        if self._window.isMaximized():
+            self._window.showNormal()
+        else:
+            self._window.showMaximized()
+
+    def _on_close(self):
+        self._window.close()
+
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.LeftButton:
+            self._mouse_pos = event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # type: ignore[override]
+        if event.buttons() & Qt.LeftButton:
+            pos = event.globalPosition().toPoint() - self._mouse_pos
+            self._window.move(pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+
+class WelcomeScreen(QMainWindow):
+    """Pantalla de bienvenida a pantalla casi completa antes de abrir MatrixQtApp."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(900, 600)
+
+        self.setObjectName('welcomeWindow')
+        try:
+            self.setWindowIcon(QIcon(_resource_path('logo.png')))
+        except Exception:
+            pass
+
+        # Contenedor con fondo de imagen
+        outer = QWidget(self)
+        self.setCentralWidget(outer)
+
+        frame = QFrame()
+        frame.setObjectName('welcomeFrame')
+        frame.setStyleSheet(self._build_stylesheet())
+
+        layout = QVBoxLayout(outer)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(frame)
+
+        inner_layout = QVBoxLayout(frame)
+        inner_layout.setContentsMargins(24, 20, 24, 24)
+        inner_layout.setSpacing(18)
+
+        # Barra superior con controles de ventana
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(0, 0, 0, 0)
+        top_bar.setSpacing(8)
+
+        def make_top_button(text: str, tooltip: str = '', is_close: bool = False, is_settings: bool = False) -> QToolButton:
+            btn = QToolButton()
+            btn.setText(text)
+            btn.setToolTip(tooltip)
+            btn.setCursor(Qt.PointingHandCursor)
+            # Ajustar tamaño: más grande para settings, estándar para otros
+            if is_settings:
+                btn.setFixedSize(36, 36)
+            else:
+                btn.setFixedSize(30, 30)
+            base = (
+                "QToolButton {"
+                "  background: transparent;"
+                "  border: none;"
+                "  border-radius: 18px;"
+                "  color: #f5f5ff;"
+                "  font-size: 16px;"
+                "}"
+            )
+            if is_close:
+                hover = (
+                    "QToolButton:hover {"
+                    "  background-color: #ff5555;"
+                    "  color: #ffffff;"
+                    "}"
+                )
+            else:
+                hover = (
+                    "QToolButton:hover {"
+                    "  background-color: rgba(255,255,255,0.15);"
+                    "  color: #ffffff;"
+                    "}"
+                )
+            btn.setStyleSheet(base + hover)
+            return btn
+
+        # Botón Configuración (más grande y visible)
+        btn_settings = make_top_button("⚙", "Configuración", is_settings=True)
+        btn_settings.clicked.connect(self.open_settings)
+        top_bar.addWidget(btn_settings)
+
+        top_bar.addStretch(1)
+
+        # Botón Minimizar
+        btn_min = make_top_button("−", "Minimizar")
+        btn_min.clicked.connect(self.showMinimized)
+        top_bar.addWidget(btn_min)
+
+        # Botón Cerrar
+        btn_close = make_top_button("✕", "Cerrar", is_close=True)
+        btn_close.clicked.connect(self.close)
+        top_bar.addWidget(btn_close)
+
+        inner_layout.addLayout(top_bar)
+
+        inner_layout.addStretch(1)
+
+        # Título principal
+        title = QLabel('MATRIX')
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            "color: #ffffff; font-size: 64px; font-weight: 800;"
+            "letter-spacing: 6px;"
+        )
+        # Efecto glow mediante QGraphicsDropShadowEffect (en lugar de text-shadow)
+        try:
+            glow = QGraphicsDropShadowEffect(title)
+            glow.setBlurRadius(30)
+            glow.setColor(QColor("#7f5af0"))
+            glow.setOffset(0, 0)
+            title.setGraphicsEffect(glow)
+        except Exception:
+            pass
+        inner_layout.addWidget(title)
+
+        # Subtítulo
+        subtitle = QLabel('Linear Algebra & Numerical Methods Suite')
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet(
+            "color: #a78bfa; font-size: 18px; letter-spacing: 2px;"
+        )
+        inner_layout.addWidget(subtitle)
+
+        # Separador sutil
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet("color: rgba(255,255,255,0.16);")
+        inner_layout.addWidget(sep)
+
+        # Botón principal de entrada
+        btn_enter = QPushButton('INICIAR SISTEMA')
+        btn_enter.setCursor(Qt.PointingHandCursor)
+        btn_enter.setFixedHeight(52)
+        btn_enter.setStyleSheet(
+            "QPushButton {"
+            "  color: #ffffff;"
+            "  font-size: 16px; font-weight: 600;"
+            "  padding: 12px 36px;"
+            "  border-radius: 24px;"
+            "  border: 2px solid #7f5af0;"
+            "  background-color: transparent;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #7f5af0;"
+            "  color: #ffffff;"
+            "  border-color: #9b6bff;"
+            "}"
+        )
+        inner_layout.addWidget(btn_enter, 0, Qt.AlignHCenter)
+
+        inner_layout.addStretch(2)
+
+        # Créditos en la esquina inferior derecha
+        credits_row = QHBoxLayout()
+        credits_row.addStretch(1)
+        credits = QLabel('Created by Nelson Lacayo')
+        credits.setStyleSheet("color:#b0b8c8; font-size:11px;")
+        credits_row.addWidget(credits)
+        inner_layout.addLayout(credits_row)
+
+        # Conectar botón
+        btn_enter.clicked.connect(self._on_enter_clicked)
+
+        # Centrar en pantalla
+        scr = QApplication.primaryScreen().geometry()
+        self.move(int(scr.center().x() - self.width()/2), int(scr.center().y() - self.height()/2))
+
+    def _build_stylesheet(self) -> str:
+        bg_path = _resource_path(os.path.join('assets', 'welcome_bg.png'))
+        if os.path.exists(bg_path):
+            # Fondo con imagen PNG
+            return (
+                "#welcomeFrame {"
+                "  border-radius: 20px;"
+                f"  background-image: url('{bg_path.replace(chr(92), '/')}');"
+                "  background-position: center;"
+                "  background-repeat: no-repeat;"
+                "}"
+            )
+        # Fallback si no existe la imagen
+        return (
+            "#welcomeFrame {"
+            "  border-radius: 20px;"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            "    stop:0 #1e1e2e, stop:1 #0f0f1a);"
+            "}"
+        )
+
+    def _on_enter_clicked(self):
+        # Placeholder: la lógica real de transición se implementa en run()
+        self.close()
+
+    def open_settings(self):
+        dlg = SettingsDialog(self)
+        dlg.exec()
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Configuración")
+        self.setModal(True)
+        self.resize(420, 260)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e2e;
+                color: #f5f5ff;
+            }
+            QGroupBox {
+                border: 1px solid #333;
+                border-radius: 8px;
+                margin-top: 10px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #a78bfa;
+            }
+            QPushButton {
+                background-color: #7f5af0;
+                color:white;
+                border-radius: 6px;
+                padding: 6px 14px;
+                border:none;
+            }
+            QPushButton:hover {
+                background-color: #9b6bff;
+            }
+        """)
+
+        # --- Contenido principal ---
+        # Grupo Tema
+        theme_group = QGroupBox("Tema")
+        theme_layout = QHBoxLayout(theme_group)
+        self.radio_dark = QRadioButton("Oscuro (actual)")
+        self.radio_light = QRadioButton("Claro (próximamente)")
+        self.radio_dark.setChecked(True)
+        self.radio_light.setEnabled(False)
+        theme_layout.addWidget(self.radio_dark)
+        theme_layout.addWidget(self.radio_light)
+        root.addWidget(theme_group)
+
+        # Grupo Idioma
+        lang_group = QGroupBox("Idioma")
+        lang_layout = QHBoxLayout(lang_group)
+        lang_label = QLabel("Idioma de la interfaz:")
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItems(["Español", "English"])
+        self.lang_combo.setCurrentIndex(0)
+        lang_layout.addWidget(lang_label)
+        lang_layout.addWidget(self.lang_combo)
+        root.addWidget(lang_group)
+
+        # Grupo Experiencia
+        exp_group = QGroupBox("Experiencia")
+        exp_layout = QVBoxLayout(exp_group)
+        self.animations_check = QCheckBox("Activar animaciones suaves")
+        self.animations_check.setChecked(True)
+        exp_layout.addWidget(self.animations_check)
+        root.addWidget(exp_group)
+
+        # Botón Guardar y cerrar
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        save_btn = QPushButton("Guardar y cerrar")
+        save_btn.clicked.connect(self.accept)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+        # Overlay "Próximamente" para indicar que la configuración aún no está activa
+        overlay = QLabel(self.tr("Próximamente"), self)
+        overlay.setAlignment(Qt.AlignCenter)
+        overlay.setStyleSheet(
+            "QLabel{"
+            "  background-color: rgba(0, 0, 0, 180);"
+            "  color: #ffffff;"
+            "  font-size: 18px;"
+            "  font-weight: 700;"
+            "  border-radius: 10px;"
+            "}"
+        )
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        overlay.resize(self.size())
+        overlay.move(0, 0)
+        overlay.raise_()
+
+
+class ResultCard(QFrame):
+    """Tarjeta de resultado elegante para el panel derecho.
+
+    Puede construirse a partir de una matriz + descripción + pasos (modo clásico)
+    o recibiendo un `content_widget` arbitrario ya maquetado para el cuerpo.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        main_window: "MatrixQtApp",
+        matrix=None,
+        description: str = "",
+        steps=None,
+        details_callback=None,
+        copy_text: str | None = None,
+        content_widget: QWidget | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._main = main_window
+        self._matrix = matrix
+        self._description = description or ""
+        self._steps = steps
+        self._copy_text = copy_text
+        self._content_widget = content_widget
+        self._details_callback = details_callback
+
+        self.setObjectName("resultCard")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+        # Estilo base por código (además del QSS existente)
+        self.setStyleSheet("""
+            QFrame#resultCard {
+                background-color: #252535;
+                border: 1px solid #333333;
+                border-radius: 12px;
+            }
+        """)
+
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(18)
+            shadow.setOffset(0, 6)
+            shadow.setColor(QColor(0, 0, 0, 130))
+            self.setGraphicsEffect(shadow)
+        except Exception:
+            pass
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 10)
+        layout.setSpacing(8)
+
+        # Encabezado
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+
+        icon_label = QLabel("📊")
+        icon_label.setStyleSheet("font-size: 15px;")
+        header.addWidget(icon_label)
+
+        title_label = QLabel(f"<b>{title}</b>")
+        title_label.setStyleSheet("color: #ffffff; font-size: 13px;")
+        header.addWidget(title_label)
+
+        header.addStretch(1)
+
+        close_btn = QToolButton()
+        close_btn.setText("✕")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QToolButton {
+                background: transparent;
+                color: #888;
+                font-size: 12px;
+                padding: 0 4px;
+                border: none;
+            }
+            QToolButton:hover {
+                color: #ffffff;
+            }
+        """)
+        close_btn.clicked.connect(self._on_close)
+        header.addWidget(close_btn)
+
+        layout.addLayout(header)
+
+        # Cuerpo: contenido arbitrario o matriz/descripcion
+        if self._content_widget is not None:
+            layout.addWidget(self._content_widget)
+        else:
+            if matrix is not None:
+                tbl = QTableWidget()
+                set_table_preview(tbl, np.array(matrix, dtype=float))
+                tbl.setAlternatingRowColors(True)
+                tbl.setStyleSheet(
+                    f"QTableWidget{{gridline-color:#444;}} "
+                    f"QTableWidget::item{{padding:4px; font-family: {MATH_FONT_STACK};}}"
+                )
+                layout.addWidget(tbl)
+
+            if description:
+                lbl = QLabel(description)
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet(f"font-family: {MATH_FONT_STACK}; font-size: 12px; color: #d0d4e4;")
+                layout.addWidget(lbl)
+
+        # Footer con acciones
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 4, 0, 0)
+        footer.setSpacing(6)
+
+        btn_copy = QToolButton()
+        btn_copy.setText("📋 Copiar")
+        btn_copy.setCursor(Qt.PointingHandCursor)
+        btn_copy.setStyleSheet("""
+            QToolButton {
+                background: transparent;
+                color: #a78bfa;
+                border: none;
+                font-size: 11px;
+                padding: 2px 6px;
+            }
+            QToolButton:hover {
+                background-color: rgba(127, 90, 240, 0.12);
+                color: #ffffff;
+            }
+        """)
+        btn_copy.clicked.connect(self._on_copy)
+        footer.addWidget(btn_copy)
+
+        btn_steps = QToolButton()
+        btn_steps.setText("🔍 Ver detalles")
+        btn_steps.setCursor(Qt.PointingHandCursor)
+        btn_steps.setEnabled(self._steps is not None or self._details_callback is not None)
+        btn_steps.setStyleSheet("""
+            QToolButton {
+                background: transparent;
+                color: #a78bfa;
+                border: none;
+                font-size: 11px;
+                padding: 2px 6px;
+            }
+            QToolButton:disabled {
+                color: #555a70;
+            }
+            QToolButton:hover:!disabled {
+                background-color: rgba(127, 90, 240, 0.12);
+                color: #ffffff;
+            }
+        """)
+        if self._details_callback is not None:
+            btn_steps.clicked.connect(self._details_callback)
+        elif self._steps is not None:
+            btn_steps.clicked.connect(self._on_steps)
+        footer.addWidget(btn_steps)
+
+        footer.addStretch(1)
+        layout.addLayout(footer)
+
+        self._run_appear_animation()
+
+    # Slots
+    def _on_close(self):
+        self._run_disappear_animation()
+
+    def _on_copy(self):
+        if self._copy_text is not None:
+            text = self._copy_text
+        else:
+            text = self._description if self._matrix is None else fmt_matrix(np.array(self._matrix, dtype=float), 2)
+        self._main.copy_to_clipboard(text)
+
+    def _on_steps(self):
+        if self._steps is not None:
+            StepsDialog(self._steps, self._main).exec()
+
+    def _run_appear_animation(self):
+        try:
+            self.setWindowOpacity(0.0)
+            anim = QPropertyAnimation(self, b"windowOpacity", self)
+            anim.setDuration(220)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._anim_in = anim
+            anim.start(QPropertyAnimation.DeleteWhenStopped)
+        except Exception:
+            pass
+
+    def _run_disappear_animation(self):
+        try:
+            anim = QPropertyAnimation(self, b"windowOpacity", self)
+            anim.setDuration(180)
+            anim.setStartValue(1.0)
+            anim.setEndValue(0.0)
+            anim.setEasingCurve(QEasingCurve.InCubic)
+
+            def _on_finished():
+                self.setParent(None)
+
+            anim.finished.connect(_on_finished)
+            self._anim_out = anim
+            anim.start(QPropertyAnimation.DeleteWhenStopped)
+        except Exception:
+            # fallback sin animación
+            self.setParent(None)
 
 
 class TrimDoubleSpinBox(QDoubleSpinBox):
@@ -383,35 +967,113 @@ class MatrixQtApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Matrix (Qt)')
+        # Ventana principal moderna sin marco del sistema
+        try:
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+        except Exception:
+            pass
         # Establecer icono de ventana (también lo aplicamos a nivel de QApplication en run())
         try:
             self.setWindowIcon(QIcon(_resource_path('logo.png')))
         except Exception:
             pass
         self.resize(1280, 800)
-        # Root layout
-        central = QWidget(); self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(12)
+        self.setObjectName('rootWindow')
 
-        # Sidebar
-        sidebar_widget = QWidget(); sidebar_widget.setMinimumWidth(200)
+        # Contenedor raíz con borde/sombra sutil y barra de título personalizada
+        outer = QWidget(); outer.setObjectName('outerContainer'); self.setCentralWidget(outer)
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+        outer_layout.setSpacing(0)
+
+        # Marco principal que simula el marco de ventana
+        frame = QFrame(); frame.setObjectName('windowFrame')
+        frame.setStyleSheet(
+            "#windowFrame{background-color:#1e1e2e; border:1px solid #333333; "
+            "border-radius:8px;}"
+        )
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+        outer_layout.addWidget(frame)
+
+        # Barra de título personalizada
+        self.title_bar = TitleBar(self)
+        frame_layout.addWidget(self.title_bar)
+
+        # Contenido principal bajo la barra de título
+        central = QWidget(); central.setObjectName('centralWidget')
+        frame_layout.addWidget(central, 1)
+
+        # Root layout interno para la app
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(18)
+
+        # Sidebar enmarcado en un QFrame para integrarlo visualmente
+        self.sidebar_frame = QFrame()
+        self.sidebar_frame.setObjectName('sidebarFrame')
+        self.sidebar_frame.setMinimumWidth(210)
+        sidebar_widget = QWidget(self.sidebar_frame)
+        sidebar_widget.setObjectName('sidebarContainer')
         sidebar = QVBoxLayout(sidebar_widget)
-        sidebar.setContentsMargins(0, 0, 12, 0)
-        sidebar.setSpacing(8)
-        layout.addWidget(sidebar_widget, 0)
-        self.btn_ops = QPushButton('🧮 Operaciones'); sidebar.addWidget(self.btn_ops)
-        self.btn_ind = QPushButton('🧭 Independencia'); sidebar.addWidget(self.btn_ind)
-        self.btn_triu = QPushButton('🔺 Triangular U'); sidebar.addWidget(self.btn_triu)
-        self.btn_rref = QPushButton('🧱 RREF'); sidebar.addWidget(self.btn_rref)
-        self.btn_ti = QPushButton('🔁 Transpuesta/Inversa'); sidebar.addWidget(self.btn_ti)
-        self.btn_det = QPushButton('🧾 Determinante'); sidebar.addWidget(self.btn_det)
-        self.btn_cramer = QPushButton('📐 Método de Cramer'); sidebar.addWidget(self.btn_cramer)
-        self.btn_bis = QPushButton('📉 Bisección'); sidebar.addWidget(self.btn_bis)
-        self.btn_fp = QPushButton('📈 Falsa posición'); sidebar.addWidget(self.btn_fp)
-        self.btn_secant = QPushButton('📐 Secante'); sidebar.addWidget(self.btn_secant)
-        self.btn_newton = QPushButton('⚡ Newton-Raphson'); sidebar.addWidget(self.btn_newton)
+        sidebar.setContentsMargins(0, 0, 16, 0)
+        sidebar.setSpacing(10)
+        frame_layout = QVBoxLayout(self.sidebar_frame)
+        frame_layout.setContentsMargins(14, 14, 10, 14)
+        frame_layout.setSpacing(10)
+        frame_layout.addWidget(sidebar_widget)
+        layout.addWidget(self.sidebar_frame, 0)
+
+        # Cabecera del menú lateral
+        title_label = QLabel('MATRIX')
+        title_label.setObjectName('sidebarTitle')
+        sidebar.addWidget(title_label)
+
+        # Botón para volver a la pantalla de bienvenida
+        btn_back_home = QPushButton(self.tr('Volver al inicio'))
+        btn_back_home.setCursor(Qt.PointingHandCursor)
+        btn_back_home.setFixedHeight(28)
+        btn_back_home.setStyleSheet(
+            "QPushButton {"
+            "  background-color: transparent;"
+            "  color: #a78bfa;"
+            "  border: 1px solid rgba(167,139,250,0.4);"
+            "  border-radius: 14px;"
+            "  font-size: 11px;"
+            "  padding: 4px 10px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: rgba(127,90,240,0.16);"
+            "  color: #ffffff;"
+            "}"
+        )
+        btn_back_home.clicked.connect(self._return_to_welcome)
+        sidebar.addWidget(btn_back_home)
+        # Grupo exclusivo para que siempre haya una sección activa
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+
+        def make_nav_button(text: str) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setProperty('navButton', True)
+            btn.setCursor(Qt.PointingHandCursor)
+            self._nav_group.addButton(btn)
+            return btn
+
+        self.btn_ops = make_nav_button('🧮 Operaciones'); sidebar.addWidget(self.btn_ops)
+        self.btn_ind = make_nav_button('🧭 Independencia'); sidebar.addWidget(self.btn_ind)
+        self.btn_triu = make_nav_button('🔺 Triangular U'); sidebar.addWidget(self.btn_triu)
+        self.btn_rref = make_nav_button('🧱 RREF'); sidebar.addWidget(self.btn_rref)
+        self.btn_ti = make_nav_button('🔁 Transpuesta/Inversa'); sidebar.addWidget(self.btn_ti)
+        self.btn_det = make_nav_button('🧾 Determinante'); sidebar.addWidget(self.btn_det)
+        self.btn_cramer = make_nav_button('📐 Método de Cramer'); sidebar.addWidget(self.btn_cramer)
+        self.btn_bis = make_nav_button('📉 Bisección'); sidebar.addWidget(self.btn_bis)
+        self.btn_fp = make_nav_button('📈 Falsa posición'); sidebar.addWidget(self.btn_fp)
+        self.btn_secant = make_nav_button('📐 Secante'); sidebar.addWidget(self.btn_secant)
+        self.btn_newton = make_nav_button('⚡ Newton-Raphson'); sidebar.addWidget(self.btn_newton)
         sidebar.addStretch(1)
 
         # Center and Right using splitter
@@ -420,24 +1082,27 @@ class MatrixQtApp(QMainWindow):
 
         self.center = QWidget(); splitter.addWidget(self.center)
         cgrid = QVBoxLayout(self.center)
-        cgrid.setContentsMargins(0, 0, 0, 0)
-        cgrid.setSpacing(12)
+        cgrid.setContentsMargins(4, 0, 12, 0)
+        cgrid.setSpacing(16)
         self.center_title = QLabel(''); self.center_title.setObjectName('pageTitle'); cgrid.addWidget(self.center_title)
         self.center_scroll = QScrollArea(); self.center_scroll.setWidgetResizable(True)
         self.center_scroll.setObjectName('centerScroll')
         self.center_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.center_body = QWidget()
         self.center_layout = QVBoxLayout(self.center_body)
-        self.center_layout.setContentsMargins(0, 0, 0, 0)
-        self.center_layout.setSpacing(16)
+        self.center_layout.setContentsMargins(20, 16, 20, 20)
+        self.center_layout.setSpacing(20)
         self.center_scroll.setWidget(self.center_body)
         cgrid.addWidget(self.center_scroll, 1)
 
         # Right results panel in scroll area
         self.right_scroll = QScrollArea(); self.right_scroll.setWidgetResizable(True)
-        self.right_container = QWidget(); self.right_layout = QVBoxLayout(self.right_container)
-        self.right_layout.setContentsMargins(0, 0, 0, 0)
-        self.right_layout.setSpacing(12)
+        self.right_scroll.setFrameShape(QFrame.NoFrame)
+        self.right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.right_container = QWidget(); self.right_container.setObjectName('rightPanel')
+        self.right_layout = QVBoxLayout(self.right_container)
+        self.right_layout.setContentsMargins(8, 8, 8, 8)
+        self.right_layout.setSpacing(14)
         self.right_scroll.setWidget(self.right_container)
         splitter.addWidget(self.right_scroll)
         splitter.setSizes([850, 430])
@@ -462,9 +1127,19 @@ class MatrixQtApp(QMainWindow):
         self._result_widgets = []
         self._dialogs = []
         self.show_ops()
+        # Marcar como activo el botón inicial para que siempre haya uno seleccionado
+        self.btn_ops.setChecked(True)
         # fonts and theme
         self._init_fonts()
         self.apply_theme()
+
+    def _return_to_welcome(self):
+        # Volver a la pantalla de bienvenida sin cerrar la aplicación completa
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, WelcomeScreen):
+                widget.show()
+                break
+        self.hide()
 
     def _init_fonts(self):
         """Load bundled math fonts if present so they can be used in the app.
@@ -489,136 +1164,447 @@ class MatrixQtApp(QMainWindow):
             pass
 
     def apply_theme(self):
-        """Apply a unified dark theme and accent color to make UI more aesthetic."""
+        """Aplicar el design system oscuro tipo "dark glass/cyberpunk" (fase 1).
+
+        Aquí definimos solo la base global: colores, tipografía, barras de
+        scroll y tooltips. Los widgets específicos (botones, tablas, etc.) se
+        refinarán en fases posteriores.
+        """
         app = QApplication.instance()
         if app:
             try:
-                app.setStyle('Fusion')
+                app.setStyle('Fusion')  # base neutra para QSS personalizado
             except Exception:
                 pass
-        accent = '#0099a8'
+
+            # Tipografía global: intentamos cargar una fuente moderna si existe,
+            # y si no, caemos a Segoe UI/Helvetica.
+            base_font = QFont('Segoe UI', 10)
+            try:
+                # Si el usuario agrega una carpeta "fonts" con .ttf/.otf
+                fonts_dir = os.path.join(os.path.dirname(_resource_path('logo.png')), 'fonts')
+                for family in os.listdir(fonts_dir) if os.path.exists(fonts_dir) else []:
+                    if family.lower().endswith(('.ttf', '.otf')):
+                        QFontDatabase.addApplicationFont(os.path.join(fonts_dir, family))
+                # Si hubiera cargado "Inter" o "Roboto", se podría usar aquí.
+            except Exception:
+                pass
+            app.setFont(base_font)
+
+        # Matplotlib coherente con el fondo oscuro
+        try:
+            mpl.rcParams['figure.facecolor'] = BG_PANEL
+            mpl.rcParams['axes.facecolor'] = BG_PANEL
+            mpl.rcParams['axes.edgecolor'] = TEXT_MUTED
+            mpl.rcParams['axes.labelcolor'] = TEXT_PRIMARY
+            mpl.rcParams['xtick.color'] = TEXT_MUTED
+            mpl.rcParams['ytick.color'] = TEXT_MUTED
+            mpl.rcParams['text.color'] = TEXT_PRIMARY
+            mpl.rcParams['grid.color'] = '#44475a'
+        except Exception:
+            pass
+
+        # QSS global: base visual + estilos principales de dashboard
         self.setStyleSheet(f"""
-            QWidget#resultCard {{
-                background-color: #1e1f22;
-                border: 1px solid #2b2d31;
-                border-radius: 8px;
-                padding: 8px;
+            QMainWindow#rootWindow, QWidget#centralWidget {{
+                background-color: {BG_MAIN};
+                color: {TEXT_PRIMARY};
             }}
-            QWidget#errorCard {{
-                background-color: #251d1d;
-                border: 1px solid #3a2b2b;
-                border-left: 4px solid #e05d5d;
-                border-radius: 8px;
-                padding: 8px;
+
+            QWidget {{
+                background-color: transparent;
+                color: {TEXT_PRIMARY};
             }}
+
+            QLabel {{
+                color: {TEXT_PRIMARY};
+            }}
+
             QLabel#pageTitle {{
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 600;
-                padding: 4px 0 8px 0;
-            }}
-            QPushButton {{
-                background: #2b2d31;
-                border: 1px solid #3a3d41;
-                border-radius: 6px;
-                padding: 6px 10px;
-            }}
-            QPushButton:hover {{
-                border-color: {accent};
-                color: #ffffff;
-            }}
-            QPushButton:pressed {{
-                background: #1f2225;
-            }}
-            QTableWidget {{
-                background: #15171a;
-                selection-background-color: rgba(0,153,168,0.35);
-                font-family: {MATH_FONT_STACK};
-            }}
-            QHeaderView::section {{
-                background: #202225;
-                color: #dddddd;
-                padding: 4px;
-                border: 0px;
-                border-right: 1px solid #2b2d31;
-            }}
-            QListWidget {{
-                background: #15171a;
-                border: 1px solid #2b2d31;
-                font-family: {MATH_FONT_STACK};
-            }}
-            QSpinBox, QDoubleSpinBox {{
-                font-family: {MATH_FONT_STACK};
+                padding: 4px 4px 10px 4px;
+                color: {TEXT_PRIMARY};
             }}
 
-            /* Modern buttons base and variants */
-            QPushButton {{
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: 600;
-                min-height: 32px;
-            }}
-            QPushButton:hover {{ opacity: 0.9; }}
-            QPushButton:pressed {{ opacity: 0.8; }}
-            QPushButton#btnPrimary {{ background-color: #0d6efd; color: white; }}
-            QPushButton#btnSecondary {{ background-color: #6c757d; color: white; }}
-
-            /* Modern tables */
-            QTableWidget {{
-                gridline-color: #404040;
-                border: 1px solid #404040;
-                border-radius: 6px;
-            }}
-            QHeaderView::section {{
-                background-color: #2d2d2d;
-                padding: 6px;
-                border: 1px solid #404040;
-                font-weight: 600;
-            }}
-            QTableWidget::item {{
-                padding: 4px;
-                font-family: 'Consolas','Courier New',monospace;
-            }}
-
-            /* Result frames */
-            QFrame#resultFrame {{
-                background-color: #2d2d2d;
-                border: 1px solid #404040;
-                border-radius: 8px;
-                padding: 12px;
-                margin: 4px 0;
-            }}
-            QFrame#methodCard {{
-                background-color: #1b1d21;
-                border: 1px solid #2c2f36;
+            QWidget#rightPanel {{
+                background-color: transparent;
                 border-radius: 14px;
             }}
+
+            QScrollArea#centerScroll, QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+
+            QFrame#resultCard {{
+                background-color: #252535;
+                border-radius: 12px;
+                border: 1px solid rgba(148,161,178,0.35);
+                padding: 12px 14px;
+            }}
+
+            /* Checkboxes y radio buttons sobre fondo oscuro */
+            QCheckBox, QRadioButton {{
+                color: #e0e0e0;
+                spacing: 8px;
+                font-size: 13px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5b5b70;
+                border-radius: 4px;
+                background: #2a2a3e;
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: #7f5af0;
+                border-color: #7f5af0;
+                image: none;
+            }}
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5b5b70;
+                border-radius: 10px;
+                background: #2a2a3e;
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: #7f5af0;
+                border-color: #7f5af0;
+            }}
+
+            QWidget#errorCard {{
+                background-color: rgba(120, 40, 40, 0.95);
+                border-radius: 12px;
+                border: 1px solid rgba(255, 120, 120, 0.65);
+                padding: 16px;
+            }}
+
+            QFrame#methodCard {{
+                background-color: {BG_PANEL};
+                border-radius: 12px;
+                border: 1px solid rgba(148,161,178,0.35);
+                padding: 20px;
+            }}
+
             QLabel#cardTitle {{
                 font-size: 15px;
                 font-weight: 600;
-                color: #e6eef2;
+                color: {TEXT_PRIMARY};
             }}
+
+            QLabel#sectionTitle {{
+                font-size: 18px;
+                font-weight: 700;
+                color: #ffffff;
+                margin-bottom: 16px;
+            }}
+
             QLabel#helperLabel {{
-                color: #9aa4aa;
+                color: {TEXT_MUTED};
                 font-size: 12px;
-                line-height: 150%;
             }}
-            QWidget#mathKeyboard QToolButton {{
-                background: #2b2d31;
-                border: 1px solid #3a3d41;
-                border-radius: 6px;
-                font-family: {MATH_FONT_STACK};
+
+            /* Checkboxes y radio buttons globales */
+            QCheckBox, QRadioButton {{
+                color: #e0e0e0;
+                spacing: 8px;
                 font-size: 13px;
-                color: #dbe3e8;
             }}
-            QWidget#mathKeyboard QToolButton:hover {{
-                border-color: {accent};
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5b5b70;
+                border-radius: 4px;
+                background: #2a2a3e;
             }}
-            QWidget#mathKeyboard QToolButton:pressed {{
-                background: #1f2225;
+            QCheckBox::indicator:checked {{
+                background-color: #7f5af0;
+                border-color: #7f5af0;
+                image: none;
             }}
-            QScrollArea#centerScroll {{
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5b5b70;
+                border-radius: 10px;
+                background: #2a2a3e;
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: #7f5af0;
+                border-color: #7f5af0;
+            }}
+
+            /* Tablas tipo dashboard */
+            QTableWidget {{
+                background-color: #2a2a3e;
+                alternate-background-color: #24243a;
+                gridline-color: #2a2a3e;
+                border: 1px solid #2a2a3e;
+                border-radius: 8px;
+                selection-background-color: {ACCENT_PRIMARY};
+                selection-color: {TEXT_PRIMARY};
+            }}
+            QTableWidget::item {{
+                padding: 8px 8px;
+                color: {TEXT_PRIMARY};
+                font-family: {MATH_FONT_STACK};
+            }}
+            QHeaderView::section {{
+                background-color: {BG_MAIN};
+                color: {TEXT_MUTED};
+                padding: 8px 8px;
                 border: none;
+                border-right: 1px solid #333344;
+                font-weight: 600;
+            }}
+
+            QTableCornerButton::section {{
+                background-color: {BG_MAIN};
+                border: none;
+                border-right: 1px solid #333344;
+            }}
+
+            /* Sidebar frame y título */
+            QFrame#sidebarFrame {{
+                background-color: {BG_PANEL};
+                border-right: 1px solid #333444;
+                border-top-left-radius: 0px;
+                border-bottom-left-radius: 0px;
+                border-top-right-radius: 18px;
+                border-bottom-right-radius: 18px;
+            }}
+
+            QLabel#sidebarTitle {{
+                font-size: 22px;
+                font-weight: 800;
+                letter-spacing: 2px;
+                color: {TEXT_PRIMARY};
+                margin-bottom: 4px;
+            }}
+
+            /* Botones de navegación planos */
+            QPushButton[navButton="true"] {{
+                background-color: transparent;
+                border: none;
+                text-align: left;
+                padding: 10px 18px;
+                border-radius: 8px;
+                font-size: 14px;
+                color: {TEXT_MUTED};
+            }}
+            QPushButton[navButton="true"]:hover {{
+                background-color: #32324a;
+                color: {TEXT_PRIMARY};
+            }}
+            QPushButton[navButton="true"]:checked {{
+                background-color: {ACCENT_PRIMARY};
+                color: {TEXT_PRIMARY};
+                font-weight: 600;
+            }}
+
+            /* Barras de scroll estilo móvil */
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(148,161,178,0.7);
+                border-radius: 5px;
+                min-height: 24px;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                background: none;
+                height: 0px;
+            }}
+
+            QScrollBar:horizontal {{
+                background: transparent;
+                height: 10px;
+                margin: 2px 4px 2px 4px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: rgba(148,161,178,0.7);
+                border-radius: 5px;
+                min-width: 24px;
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
+                background: none;
+                width: 0px;
+            }}
+
+            /* Tooltips oscuros con borde acentuado */
+            QToolTip {{
+                background-color: {BG_PANEL};
+                color: {TEXT_PRIMARY};
+                border: 1px solid {ACCENT_PRIMARY};
+                padding: 6px 8px;
+                border-radius: 6px;
+            }}
+
+            /* Campos de entrada */
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+                background-color: #2a2a3e;
+                border: 1px solid #444455;
+                border-radius: 6px;
+                padding: 6px 10px;
+                color: {TEXT_PRIMARY};
+            }}
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
+                border: 1px solid {ACCENT_PRIMARY};
+            }}
+
+            /* Botones de incremento/decremento de SpinBox */
+            QSpinBox::up-button, QDoubleSpinBox::up-button {{
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 18px;
+                background-color: #32324a;
+                border-left: 1px solid #444455;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 0px;
+                padding: 0px;
+            }}
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 18px;
+                background-color: #32324a;
+                border-left: 1px solid #444455;
+                border-bottom-right-radius: 6px;
+                border-top-right-radius: 0px;
+                padding: 0px;
+            }}
+
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background-color: #3e3e55;
+            }}
+
+            QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+            QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+                background-color: {ACCENT_PRIMARY};
+            }}
+
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow,
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+                width: 0;
+                height: 0;
+                margin: 0px 4px 0px 4px;
+            }}
+            /* Triángulos claros con borders CSS */
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-bottom: 6px solid #94a1b2;
+            }}
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #94a1b2;
+            }}
+
+            QComboBox {{
+                min-height: 36px;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 26px;
+                border: none;
+            }}
+            QComboBox::down-arrow {{
+                width: 10px;
+                height: 10px;
+                margin-right: 4px;
+                image: none;
+                border: none;
+                background: transparent;
+            }}
+            QComboBox::down-arrow:!editable {{
+                border-left: none;
+            }}
+            QComboBox::down-arrow {{
+                border: none;
+            }}
+            QComboBox::drop-down:pressed {{
+                background: transparent;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {BG_PANEL};
+                border: 1px solid #444455;
+                selection-background-color: {ACCENT_PRIMARY};
+                selection-color: {TEXT_PRIMARY};
+            }}
+
+            /* Botones de acción (excluye los del sidebar por propiedad navButton) */
+            QPushButton:not([navButton="true"]) {{
+                font-size: 14px;
+                border-radius: 8px;
+                padding: 8px 18px;
+                min-height: 40px;
+            }}
+
+            /* Botones dentro de tarjetas de resultado y diálogos secundarios */
+            QFrame#resultCard QPushButton,
+            QWidget#resultCard QPushButton {{
+                background-color: transparent;
+                border: 1px solid #7f5af0;
+                color: #a78bfa;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+            }}
+            QFrame#resultCard QPushButton:hover,
+            QWidget#resultCard QPushButton:hover {{
+                background-color: rgba(127, 90, 240, 0.12);
+                color: #ffffff;
+            }}
+
+            /* Primario: usado para acciones "Calcular" y similares */
+            QPushButton#btnPrimary {{
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                                 stop:0 #8b5cf6, stop:1 #7c3aed);
+                color: {TEXT_PRIMARY};
+                font-weight: 700;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                min-height: 40px;
+                box-shadow: 0 4px 12px rgba(127, 90, 240, 0.3);
+            }}
+            QPushButton#btnPrimary:hover {{
+                background-color: #9370db;
+                box-shadow: 0 6px 16px rgba(127, 90, 240, 0.4);
+            }}
+            QPushButton#btnPrimary:pressed {{
+                background-color: #6a4fc9;
+                box-shadow: 0 2px 8px rgba(127, 90, 240, 0.25);
+            }}
+
+            /* Secundario: outline para "Aplicar tamaño", "Aleatoria", etc. */
+            QPushButton#btnSecondary {{
+                background-color: transparent;
+                color: {ACCENT_PRIMARY};
+                border: 2px solid {ACCENT_PRIMARY};
+                border-radius: 8px;
+                font-weight: 600;
+                padding: 8px 16px;
+                min-height: 36px;
+            }}
+            QPushButton#btnSecondary:hover {{
+                background-color: {ACCENT_PRIMARY};
+                color: {TEXT_PRIMARY};
+            }}
+            QPushButton#btnSecondary:pressed {{
+                background-color: #6a4fc9;
+                color: {TEXT_PRIMARY};
             }}
         """)
 
@@ -640,36 +1626,20 @@ class MatrixQtApp(QMainWindow):
         QApplication.clipboard().setText(text, QClipboard.Clipboard)
 
     def push_result(self, title: str, matrix: np.ndarray | None, description: str = '', steps=None, accent: str | None = None):
-        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
-        lay.addWidget(QLabel(f"<b>{title}</b>"))
-        if matrix is not None:
-            tbl = QTableWidget(); set_table_preview(tbl, np.array(matrix, dtype=float))
-            tbl.setAlternatingRowColors(True)
-            tbl.setStyleSheet(f"QTableWidget{{gridline-color:#444;}} QTableWidget::item{{padding:4px; font-family: {MATH_FONT_STACK};}}")
-            lay.addWidget(tbl)
-        if description:
-            lbl = QLabel(description)
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"font-family: {MATH_FONT_STACK};")
-            lay.addWidget(lbl)
-        row = QHBoxLayout(); lay.addLayout(row)
-        btn_copy = QPushButton('📋 Copiar'); row.addWidget(btn_copy)
-        btn_steps = QPushButton('👣 Ver pasos'); row.addWidget(btn_steps)
-        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete)
-        row.addStretch(1)
-        btn_copy.clicked.connect(lambda: self.copy_to_clipboard(description if matrix is None else fmt_matrix(np.array(matrix, dtype=float), 2)))
-        if steps:
-            btn_steps.setEnabled(True)
-            btn_steps.clicked.connect(lambda: StepsDialog(steps, self).exec())
-        else:
-            btn_steps.setEnabled(False)
-        # delete handler
-        def _remove():
-            card.setParent(None)
-            if card in self._result_widgets:
-                self._result_widgets.remove(card)
-        btn_delete.clicked.connect(_remove)
-        self.right_layout.addWidget(card)
+        """API clásica para resultados matriciales (usa matriz + descripción)."""
+        card = ResultCard(title, self, matrix=matrix, description=description, steps=steps)
+        self.right_layout.insertWidget(0, card)
+        self._result_widgets.append(card)
+        return card
+
+    def add_result_card(self, title: str, content_widget: QWidget, steps=None, copy_text: str | None = None, details_callback=None):
+        """Crea una ResultCard usando un widget de contenido ya construido.
+
+        Útil para métodos numéricos que generan resúmenes más ricos (gráficas,
+        métricas, etc.) sin duplicar botones de acción.
+        """
+        card = ResultCard(title, self, content_widget=content_widget, steps=steps, copy_text=copy_text, details_callback=details_callback)
+        self.right_layout.insertWidget(0, card)
         self._result_widgets.append(card)
         return card
 
@@ -695,6 +1665,15 @@ class MatrixQtApp(QMainWindow):
     def _build_method_card(self, title: str, subtitle: str | None = None):
         card = QFrame(); card.setObjectName('methodCard')
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        # Sombra suave tipo tarjeta flotante
+        try:
+            shadow = QGraphicsDropShadowEffect(card)
+            shadow.setBlurRadius(18)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 90))
+            card.setGraphicsEffect(shadow)
+        except Exception:
+            pass
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 18)
         layout.setSpacing(10)
@@ -718,6 +1697,26 @@ class MatrixQtApp(QMainWindow):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setToolTip(insert)
             btn.clicked.connect(lambda _=None, payload=insert: self._insert_text(target_edit, payload))
+            # Estilo compacto tipo teclado para funciones matemáticas
+            btn.setStyleSheet("""
+                QToolButton {
+                    background-color: #2a2a3e;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    color: #ddd;
+                    font-family: 'Consolas', monospace;
+                    font-size: 12px;
+                    padding: 2px 6px;
+                }
+                QToolButton:hover {
+                    background-color: #7f5af0;
+                    color: white;
+                    border-color: #7f5af0;
+                }
+                QToolButton:pressed {
+                    background-color: #6a4fc9;
+                }
+            """)
             grid.addWidget(btn, row, col)
 
         rows = [
@@ -748,6 +1747,107 @@ class MatrixQtApp(QMainWindow):
         lbl = QLabel("Ej.: x**3 - 4*x + sec(x/2) mezcla polinomio y trigonometría.")
         lbl.setObjectName('helperLabel'); lbl.setWordWrap(True)
         return lbl
+
+    def _style_button(self, btn, tipo: str = 'secondary'):
+        """Aplica estilos modernos DIRECTAMENTE al botón para asegurar que se vean bien"""
+        if tipo == 'primary':
+            # Estilo para botón CALCULAR (Violeta sólido)
+            btn.setStyleSheet("""
+            QPushButton {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #8b5cf6, stop:1 #7c3aed);
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                padding: 10px 20px;
+                border: none;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #9370db;
+            }
+            QPushButton:pressed {
+                background-color: #6a4fc9;
+                padding-top: 12px; /* Efecto de hundirse */
+            }
+        """)
+        else:
+            # Estilo para botones SECUNDARIOS (Outline violeta)
+            btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #a78bfa;
+                font-weight: 600;
+                border-radius: 8px;
+                padding: 8px 16px;
+                border: 2px solid #7c3aed;
+            }
+            QPushButton:hover {
+                background-color: #7c3aed;
+                color: white;
+            }
+            QPushButton:pressed {
+                background-color: #5b21b6;
+                border-color: #5b21b6;
+            }
+        """)
+
+        # Añadir sombra suave
+        shadow = QGraphicsDropShadowEffect(btn)
+        shadow.setBlurRadius(10)
+        shadow.setColor(QColor(124, 58, 237, 80))
+        shadow.setOffset(0, 4)
+        btn.setGraphicsEffect(shadow)
+
+        # Cursor de mano
+        btn.setCursor(Qt.PointingHandCursor)
+
+    def _style_spinbox_arrows(self, *spinboxes):
+        """Apply a localized stylesheet to spinboxes to ensure clear triangular arrows."""
+        css = '''
+            QSpinBox::up-button, QDoubleSpinBox::up-button {
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 18px;
+                background-color: #32324a;
+                border-left: 1px solid #444455;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 0px;
+                padding: 0px;
+            }
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 18px;
+                background-color: #32324a;
+                border-left: 1px solid #444455;
+                border-bottom-right-radius: 6px;
+                border-top-right-radius: 0px;
+                padding: 0px;
+            }
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow,
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+                width: 0;
+                height: 0;
+                margin: 0px 4px 0px 4px;
+            }
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-bottom: 6px solid #94a1b2;
+            }
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #94a1b2;
+            }
+        '''
+        for sp in spinboxes:
+            try:
+                if sp is None:
+                    continue
+                sp.setStyleSheet(css)
+            except Exception:
+                pass
 
     def _build_geogebra_url(self, expr_text: str, x0: float | None = None, root: float | None = None) -> str:
         expr_clean = expr_text.replace('^', '**')
@@ -782,34 +1882,43 @@ class MatrixQtApp(QMainWindow):
         self.center_title.setText('Operaciones con matrices')
         self.clear_center()
         cont = QWidget(); gl = QGridLayout(cont)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setHorizontalSpacing(20)
+        gl.setVerticalSpacing(12)
         self.gridA = MatrixTable(3,3); self.gridB = MatrixTable(3,3)
         # A header and size controls
-        gl.addWidget(QLabel('<b>Matriz A</b>'), 0, 0)
+        headerA = QLabel('Matriz A'); headerA.setObjectName('sectionTitle'); gl.addWidget(headerA, 0, 0)
         sizeA = QHBoxLayout();
+        sizeA.setSpacing(16)
+        sizeA.setContentsMargins(0, 0, 0, 8)
         sizeA.addWidget(QLabel('Filas:'))
         a_rows = QSpinBox(); a_rows.setRange(1, 20); a_rows.setValue(3); sizeA.addWidget(a_rows)
         sizeA.addWidget(QLabel('Columnas:'))
         a_cols = QSpinBox(); a_cols.setRange(1, 20); a_cols.setValue(3); sizeA.addWidget(a_cols)
-        btn_setA = QPushButton('Aplicar tamaño A'); sizeA.addWidget(btn_setA)
+        btn_setA = QPushButton('Aplicar tamaño A'); btn_setA.setObjectName('btnSecondary'); sizeA.addWidget(btn_setA)
         # random button for A
-        btn_randA = QPushButton('🎲 Aleatoria A'); sizeA.addWidget(btn_randA)
+        btn_randA = QPushButton('🎲 Aleatoria A'); btn_randA.setObjectName('btnSecondary'); sizeA.addWidget(btn_randA)
+        sizeA.addStretch(1)
         gl.addLayout(sizeA, 1, 0)
         gl.addWidget(self.gridA, 2, 0)
         # B header and size controls
-        gl.addWidget(QLabel('<b>Matriz B</b>'), 3, 0)
+        headerB = QLabel('Matriz B'); headerB.setObjectName('sectionTitle'); gl.addWidget(headerB, 3, 0)
         sizeB = QHBoxLayout();
+        sizeB.setSpacing(16)
+        sizeB.setContentsMargins(0, 0, 0, 8)
         sizeB.addWidget(QLabel('Filas:'))
         b_rows = QSpinBox(); b_rows.setRange(1, 20); b_rows.setValue(3); sizeB.addWidget(b_rows)
         sizeB.addWidget(QLabel('Columnas:'))
         b_cols = QSpinBox(); b_cols.setRange(1, 20); b_cols.setValue(3); sizeB.addWidget(b_cols)
-        btn_setB = QPushButton('Aplicar tamaño B'); sizeB.addWidget(btn_setB)
-        btn_randB = QPushButton('🎲 Aleatoria B'); sizeB.addWidget(btn_randB)
+        btn_setB = QPushButton('Aplicar tamaño B'); btn_setB.setObjectName('btnSecondary'); sizeB.addWidget(btn_setB)
+        btn_randB = QPushButton('🎲 Aleatoria B'); btn_randB.setObjectName('btnSecondary'); sizeB.addWidget(btn_randB)
+        sizeB.addStretch(1)
         gl.addLayout(sizeB, 4, 0)
         gl.addWidget(self.gridB, 5, 0)
         bar = QHBoxLayout()
         self.op_selector = QComboBox(); self.op_selector.addItems(['Suma (A + B)','Resta (A - B)','Producto (A · B)','Combinación (α·A + β·B)'])
         bar.addWidget(self.op_selector)
-        calc = QPushButton('⚙️ Calcular'); bar.addWidget(calc)
+        calc = QPushButton('⚙️ Calcular'); calc.setObjectName('btnPrimary'); bar.addWidget(calc)
         self.compat_label = QLabel('Compatibilidad: —'); bar.addWidget(self.compat_label); bar.addStretch(1)
         gl.addLayout(bar, 6, 0)
         # Combination controls (hidden unless selected)
@@ -828,10 +1937,10 @@ class MatrixQtApp(QMainWindow):
         c_rows = QSpinBox(); c_rows.setRange(1, 12); c_rows.setValue(3); csize.addWidget(c_rows)
         csize.addWidget(QLabel('Columnas:'))
         c_cols = QSpinBox(); c_cols.setRange(1, 12); c_cols.setValue(3); csize.addWidget(c_cols)
-        btn_c_set = QPushButton('Aplicar tamaño C'); csize.addWidget(btn_c_set)
+        btn_c_set = QPushButton('Aplicar tamaño C'); btn_c_set.setObjectName('btnSecondary'); csize.addWidget(btn_c_set)
         self.gridC = MatrixTable(3,3); comb_lay.addWidget(self.gridC)
         cacts = QHBoxLayout(); comb_lay.addLayout(cacts)
-        btn_c_rand = QPushButton('🎲 Aleatoria C'); cacts.addWidget(btn_c_rand); cacts.addStretch(1)
+        btn_c_rand = QPushButton('🎲 Aleatoria C'); btn_c_rand.setObjectName('btnSecondary'); cacts.addWidget(btn_c_rand); cacts.addStretch(1)
         comb_wrap.setVisible(False)
         gl.addWidget(comb_wrap, 7, 0)
         self.center_layout.addWidget(cont)
@@ -909,6 +2018,17 @@ class MatrixQtApp(QMainWindow):
             except Exception as e:
                 self.push_error(str(e))
         calc.clicked.connect(do_calc)
+        try:
+            self._style_button(btn_setA, 'secondary')
+            self._style_button(btn_randA, 'secondary')
+            self._style_button(btn_setB, 'secondary')
+            self._style_button(btn_randB, 'secondary')
+            self._style_button(calc, 'primary')
+            self._style_button(btn_c_set, 'secondary')
+            self._style_button(btn_c_rand, 'secondary')
+            self._style_spinbox_arrows(a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, alpha_spin, beta_spin)
+        except Exception:
+            pass
 
     def show_ind(self):
         self.current_view = 'ind'
@@ -918,17 +2038,28 @@ class MatrixQtApp(QMainWindow):
         wrap = QWidget(); wrap.setLayout(box)
         box.addWidget(QLabel('Introduce vectores (cada vector como fila):'))
         size_bar = QHBoxLayout(); box.addLayout(size_bar)
+        size_bar.setSpacing(16)
+        size_bar.setContentsMargins(0, 0, 0, 8)
         size_bar.addWidget(QLabel('Filas:'))
         vi_rows = QSpinBox(); vi_rows.setRange(1, 20); vi_rows.setValue(3); size_bar.addWidget(vi_rows)
         size_bar.addWidget(QLabel('Columnas:'))
         vi_cols = QSpinBox(); vi_cols.setRange(1, 20); vi_cols.setValue(3); size_bar.addWidget(vi_cols)
-        btn_set = QPushButton('Aplicar tamaño'); size_bar.addWidget(btn_set)
+        btn_set = QPushButton('Aplicar tamaño'); btn_set.setObjectName('btnSecondary'); size_bar.addWidget(btn_set)
+        size_bar.addStretch(1)
         self.vgrid = MatrixTable(3,3)
         box.addWidget(self.vgrid)
-        btn = QPushButton('🧭 Evaluar independencia'); box.addWidget(btn)
+        btn = QPushButton('🧭 Evaluar independencia'); btn.setObjectName('btnPrimary'); box.addWidget(btn)
         self.center_layout.addWidget(wrap)
 
-        btn_rand = QPushButton('🎲 Aleatoria'); box.addWidget(btn_rand)
+        btn_rand = QPushButton('🎲 Aleatoria'); btn_rand.setObjectName('btnSecondary'); box.addWidget(btn_rand)
+        # Estilos de botones
+        try:
+            self._style_button(btn_set, 'secondary')
+            self._style_button(btn_rand, 'secondary')
+            self._style_button(btn, 'primary')
+            self._style_spinbox_arrows(vi_rows, vi_cols)
+        except Exception:
+            pass
         btn_set.clicked.connect(lambda: self.vgrid.set_size(int(vi_rows.value()), int(vi_cols.value())))
         btn_rand.clicked.connect(lambda: self.vgrid.fill_random())
 
@@ -951,16 +2082,31 @@ class MatrixQtApp(QMainWindow):
         box = QVBoxLayout(); wrap = QWidget(); wrap.setLayout(box)
         # size controls
         size_bar = QHBoxLayout(); box.addLayout(size_bar)
+        size_bar.setSpacing(16)
+        size_bar.setContentsMargins(0, 0, 0, 8)
         size_bar.addWidget(QLabel('Filas:'))
         triu_rows = QSpinBox(); triu_rows.setRange(1, 12); triu_rows.setValue(4); size_bar.addWidget(triu_rows)
         size_bar.addWidget(QLabel('Columnas:'))
         triu_cols = QSpinBox(); triu_cols.setRange(1, 12); triu_cols.setValue(4); size_bar.addWidget(triu_cols)
-        btn_set = QPushButton('Aplicar tamaño'); size_bar.addWidget(btn_set)
+        btn_set = QPushButton('Aplicar tamaño'); btn_set.setObjectName('btnSecondary'); size_bar.addWidget(btn_set)
+        size_bar.addStretch(1)
         self.triu_grid = MatrixTable(4,4); box.addWidget(self.triu_grid)
         acts = QHBoxLayout(); box.addLayout(acts)
-        btn_rand = QPushButton('🎲 Aleatoria'); acts.addWidget(btn_rand)
-        btn = QPushButton('🔺 Calcular U'); acts.addWidget(btn)
+        acts.setSpacing(16)
+        acts.setContentsMargins(0, 0, 0, 8)
+        btn_rand = QPushButton('🎲 Aleatoria'); btn_rand.setObjectName('btnSecondary'); acts.addWidget(btn_rand)
+        btn = QPushButton('🔺 Calcular U'); btn.setObjectName('btnPrimary'); acts.addWidget(btn)
+        acts.addStretch(1)
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(btn_set, 'secondary')
+            self._style_button(btn_rand, 'secondary')
+            self._style_button(btn, 'primary')
+            self._style_spinbox_arrows(triu_rows, triu_cols)
+        except Exception:
+            pass
 
         btn_set.clicked.connect(lambda: self.triu_grid.set_size(int(triu_rows.value()), int(triu_cols.value())))
         btn_rand.clicked.connect(lambda: self.triu_grid.fill_random())
@@ -980,16 +2126,31 @@ class MatrixQtApp(QMainWindow):
         self.clear_center()
         box = QVBoxLayout(); wrap = QWidget(); wrap.setLayout(box)
         size_bar = QHBoxLayout(); box.addLayout(size_bar)
+        size_bar.setSpacing(16)
+        size_bar.setContentsMargins(0, 0, 0, 8)
         size_bar.addWidget(QLabel('Filas:'))
         rref_rows = QSpinBox(); rref_rows.setRange(1, 12); rref_rows.setValue(3); size_bar.addWidget(rref_rows)
         size_bar.addWidget(QLabel('Columnas:'))
         rref_cols = QSpinBox(); rref_cols.setRange(1, 12); rref_cols.setValue(4); size_bar.addWidget(rref_cols)
-        btn_set = QPushButton('Aplicar tamaño'); size_bar.addWidget(btn_set)
+        btn_set = QPushButton('Aplicar tamaño'); btn_set.setObjectName('btnSecondary'); size_bar.addWidget(btn_set)
+        size_bar.addStretch(1)
         self.rref_grid = MatrixTable(3,4); box.addWidget(self.rref_grid)
         acts = QHBoxLayout(); box.addLayout(acts)
-        btn_rand = QPushButton('🎲 Aleatoria'); acts.addWidget(btn_rand)
-        btn = QPushButton('🧱 Calcular RREF'); acts.addWidget(btn)
+        acts.setSpacing(16)
+        acts.setContentsMargins(0, 0, 0, 8)
+        btn_rand = QPushButton('🎲 Aleatoria'); btn_rand.setObjectName('btnSecondary'); acts.addWidget(btn_rand)
+        btn = QPushButton('🧱 Calcular RREF'); btn.setObjectName('btnPrimary'); acts.addWidget(btn)
+        acts.addStretch(1)
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(btn_set, 'secondary')
+            self._style_button(btn_rand, 'secondary')
+            self._style_button(btn, 'primary')
+            self._style_spinbox_arrows(rref_rows, rref_cols)
+        except Exception:
+            pass
 
         btn_set.clicked.connect(lambda: self.rref_grid.set_size(int(rref_rows.value()), int(rref_cols.value())))
         btn_rand.clicked.connect(lambda: self.rref_grid.fill_random())
@@ -1013,12 +2174,24 @@ class MatrixQtApp(QMainWindow):
         ti_rows = QSpinBox(); ti_rows.setRange(1, 20); ti_rows.setValue(3); size_bar.addWidget(ti_rows)
         size_bar.addWidget(QLabel('Columnas:'))
         ti_cols = QSpinBox(); ti_cols.setRange(1, 20); ti_cols.setValue(3); size_bar.addWidget(ti_cols)
-        btn_set = QPushButton('Aplicar tamaño'); size_bar.addWidget(btn_set)
+        btn_set = QPushButton('Aplicar tamaño'); btn_set.setObjectName('btnSecondary'); size_bar.addWidget(btn_set)
         self.ti_grid = MatrixTable(3,3); box.addWidget(self.ti_grid)
         acts = QHBoxLayout(); box.addLayout(acts)
-        btn_rand = QPushButton('🎲 Aleatoria'); acts.addWidget(btn_rand)
-        btn = QPushButton('🔁 Calcular'); acts.addWidget(btn)
+        acts.setSpacing(16)
+        acts.setContentsMargins(0, 0, 0, 8)
+        btn_rand = QPushButton('🎲 Aleatoria'); btn_rand.setObjectName('btnSecondary'); acts.addWidget(btn_rand)
+        btn = QPushButton('🔁 Calcular'); btn.setObjectName('btnPrimary'); acts.addWidget(btn)
+        acts.addStretch(1)
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(btn_set, 'secondary')
+            self._style_button(btn_rand, 'secondary')
+            self._style_button(btn, 'primary')
+            self._style_spinbox_arrows(ti_rows, ti_cols)
+        except Exception:
+            pass
 
         btn_set.clicked.connect(lambda: self.ti_grid.set_size(int(ti_rows.value()), int(ti_cols.value())))
         btn_rand.clicked.connect(lambda: self.ti_grid.fill_random())
@@ -1051,12 +2224,24 @@ class MatrixQtApp(QMainWindow):
         det_rows = QSpinBox(); det_rows.setRange(1, 12); det_rows.setValue(3); size_bar.addWidget(det_rows)
         size_bar.addWidget(QLabel('Columnas:'))
         det_cols = QSpinBox(); det_cols.setRange(1, 12); det_cols.setValue(3); size_bar.addWidget(det_cols)
-        btn_set = QPushButton('Aplicar tamaño'); size_bar.addWidget(btn_set)
+        btn_set = QPushButton('Aplicar tamaño'); btn_set.setObjectName('btnSecondary'); size_bar.addWidget(btn_set)
         self.det_grid = MatrixTable(3,3); box.addWidget(self.det_grid)
         acts = QHBoxLayout(); box.addLayout(acts)
-        btn_rand = QPushButton('🎲 Aleatoria'); acts.addWidget(btn_rand)
-        btn = QPushButton('🧾 Calcular det'); acts.addWidget(btn)
+        acts.setSpacing(16)
+        acts.setContentsMargins(0, 0, 0, 8)
+        btn_rand = QPushButton('🎲 Aleatoria'); btn_rand.setObjectName('btnSecondary'); acts.addWidget(btn_rand)
+        btn = QPushButton('🧾 Calcular det'); btn.setObjectName('btnPrimary'); acts.addWidget(btn)
+        acts.addStretch(1)
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(btn_set, 'secondary')
+            self._style_button(btn_rand, 'secondary')
+            self._style_button(btn, 'primary')
+            self._style_spinbox_arrows(det_rows, det_cols)
+        except Exception:
+            pass
 
         btn_set.clicked.connect(lambda: self.det_grid.set_size(int(det_rows.value()), int(det_cols.value())))
         btn_rand.clicked.connect(lambda: self.det_grid.fill_random())
@@ -1082,7 +2267,7 @@ class MatrixQtApp(QMainWindow):
         top.addWidget(QLabel('Dimensión del sistema (n):'))
         self.cramer_n = QSpinBox(); self.cramer_n.setRange(1, 10); self.cramer_n.setValue(3)
         top.addWidget(self.cramer_n)
-        btn_create = QPushButton('Crear sistema'); top.addWidget(btn_create)
+        btn_create = QPushButton('Crear sistema'); btn_create.setObjectName('btnSecondary'); top.addWidget(btn_create)
         # placeholder: no grid until user creates it
         self.cramer_grid = None
         self.cramer_grid_host = QWidget(); self.cramer_grid_layout = QVBoxLayout(self.cramer_grid_host)
@@ -1090,7 +2275,14 @@ class MatrixQtApp(QMainWindow):
         # actions area under grid (created after grid exists)
         self.cramer_actions_host = QWidget(); self.cramer_actions_layout = QHBoxLayout(self.cramer_actions_host)
         box.addWidget(self.cramer_actions_host)
-        btn_calc = QPushButton('📐 Resolver'); btn_calc.setEnabled(False); box.addWidget(btn_calc)
+        btn_calc = QPushButton('📐 Resolver'); btn_calc.setObjectName('btnPrimary'); btn_calc.setEnabled(False); box.addWidget(btn_calc)
+        # Estilos de botones
+        try:
+            self._style_button(btn_create, 'secondary')
+            self._style_button(btn_calc, 'primary')
+            self._style_spinbox_arrows(self.cramer_n)
+        except Exception:
+            pass
         self.center_layout.addWidget(wrap)
 
         def crear():
@@ -1110,8 +2302,12 @@ class MatrixQtApp(QMainWindow):
             while self.cramer_actions_layout.count():
                 w = self.cramer_actions_layout.takeAt(0).widget()
                 if w: w.setParent(None)
-            btn_rand = QPushButton('🎲 Aleatoria [A|b]')
+            btn_rand = QPushButton('🎲 Aleatoria [A|b]'); btn_rand.setObjectName('btnSecondary')
             self.cramer_actions_layout.addWidget(btn_rand)
+            try:
+                self._style_button(btn_rand, 'secondary')
+            except Exception:
+                pass
             btn_rand.clicked.connect(lambda: self.cramer_grid.fill_random())
             btn_calc.setEnabled(True)
         btn_create.clicked.connect(crear)
@@ -1136,6 +2332,12 @@ class MatrixQtApp(QMainWindow):
             except Exception as e:
                 self.push_result('Error', None, str(e))
         btn_calc.clicked.connect(calcular)
+        try:
+            self._style_button(btn_create, 'secondary')
+            self._style_button(btn_calc, 'primary')
+            self._style_spinbox_arrows(self.cramer_n)
+        except Exception:
+            pass
 
     def show_bisection(self):
         self.current_view = 'bisection'
@@ -1172,6 +2374,14 @@ class MatrixQtApp(QMainWindow):
         p_row.addLayout(make_col('Iter máx', itmax))
         rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función e intervalo aleatorios válidos'); rand_btn.setObjectName('btnSecondary'); p_row.addWidget(rand_btn)
         calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary'); p_row.addWidget(calc_btn)
+
+        # Estilos de botones
+        try:
+            self._style_button(rand_btn, 'secondary')
+            self._style_button(calc_btn, 'primary')
+            self._style_spinbox_arrows(xi_spin, xu_spin, eps_spin, itmax)
+        except Exception:
+            pass
 
         self.center_layout.addWidget(panel)
         def calc():
@@ -1253,7 +2463,8 @@ class MatrixQtApp(QMainWindow):
         rand_btn.clicked.connect(fill_random)
 
     def _push_bisect_summary_card(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
-        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        """Crea una tarjeta estándar de Bisección usando ResultCard."""
+        content = QWidget(); lay = QVBoxLayout(content); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
         title = QLabel('<b>Método de bisección</b>'); lay.addWidget(title)
         formula = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
         lay.addWidget(formula)
@@ -1263,32 +2474,45 @@ class MatrixQtApp(QMainWindow):
             ea = float(rows[-1][4])
             residual = abs(float(rows[-1][7]))
             sgn = '+' if xr >= 0 else ''
-            # Tres líneas solicitadas envueltas en QFrame con estilo
+
             def add_frame_label(text: str):
                 fr = QFrame(); fr.setObjectName('resultFrame')
                 vl = QVBoxLayout(fr); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
                 lab = QLabel(text); lab.setStyleSheet("color:#ddd; font-size:12pt;")
                 vl.addWidget(lab)
                 lay.addWidget(fr)
+
             add_frame_label(f"El método CONVERGE en <b>{n}</b> iteraciones.")
             add_frame_label(f"LA RAÍZ ES: <b>{sgn}{xr:.6f}</b> | Error (Ea): <b>{ea*100:.2f}%</b>")
             tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
             add_frame_label(f"Error raíz |f(r)|: <b>{residual:.6g}</b> | Tolerancia: <b>{tol_show}</b>")
-        # Actions
-        row = QHBoxLayout(); lay.addLayout(row)
-        btn_open = QPushButton('🔍 Ver detalles…'); btn_open.setObjectName('btnSecondary'); row.addWidget(btn_open)
-        btn_delete = QPushButton('🗑️ Quitar'); btn_delete.setObjectName('btnSecondary'); row.addWidget(btn_delete); row.addStretch(1)
 
-        def _open():
-            self._show_bisect_dialog(expr_text, xi, xu, rows, eps_text)
-        def _remove():
-            card.setParent(None)
-            if card in self._result_widgets:
-                self._result_widgets.remove(card)
-        btn_open.clicked.connect(_open)
-        btn_delete.clicked.connect(_remove)
-        self.right_layout.addWidget(card)
-        self._result_widgets.append(card)
+        copy_lines = []
+        copy_lines.append(f"Método de Bisección")
+        copy_lines.append(f"f(x) = {expr_text}")
+        if rows:
+            n = len(rows)
+            xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
+            tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
+            copy_lines.append(f"Iteraciones: {n}")
+            copy_lines.append(f"Raíz ≈ {xr:.10g}")
+            copy_lines.append(f"Ea ≈ {ea*100:.4f}%")
+            copy_lines.append(f"|f(r)| ≈ {residual:.6g}")
+            if tol_show:
+                copy_lines.append(f"Tolerancia: {tol_show}")
+        copy_text = "\n".join(copy_lines)
+
+        # Usa la tarjeta unificada. El botón "Ver detalles" abre el diálogo
+        # específico de bisección ya existente.
+        self.add_result_card(
+            'Método de Bisección',
+            content,
+            steps=None,
+            copy_text=copy_text,
+            details_callback=lambda: self._show_bisect_dialog(expr_text, xi, xu, rows, eps_text),
+        )
 
     def _show_bisect_dialog(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
         try:
@@ -1359,6 +2583,14 @@ class MatrixQtApp(QMainWindow):
         box.addWidget(error_label)
 
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(rand_btn, 'secondary')
+            self._style_button(calc_btn, 'primary')
+            self._style_spinbox_arrows(xi_spin, xu_spin, eps_spin, itmax)
+        except Exception:
+            pass
 
         def calc():
             try:
@@ -1552,6 +2784,14 @@ class MatrixQtApp(QMainWindow):
         box.addWidget(error_label)
 
         self.center_layout.addWidget(wrap)
+
+        # Estilos de botones
+        try:
+            self._style_button(rand_btn, 'secondary')
+            self._style_button(calc_btn, 'primary')
+            self._style_spinbox_arrows(x0_spin, x1_spin, eps_spin, itmax)
+        except Exception:
+            pass
 
         def _is_empty(spin: TrimDoubleSpinBox | QSpinBox):
             if isinstance(spin, TrimDoubleSpinBox):
@@ -1789,6 +3029,13 @@ class MatrixQtApp(QMainWindow):
         buttons_wrap = QWidget(); btn_layout = QHBoxLayout(buttons_wrap); btn_layout.setContentsMargins(0,0,0,0); btn_layout.setSpacing(12)
         rand_btn = QPushButton('🎲 Aleatoria'); rand_btn.setToolTip('Rellenar con función y x₀ sugeridos'); rand_btn.setObjectName('btnSecondary')
         calc_btn = QPushButton('⚙️ Calcular'); calc_btn.setObjectName('btnPrimary')
+        # Estilos de botones principales
+        try:
+            self._style_button(rand_btn, 'secondary')
+            self._style_button(calc_btn, 'primary')
+            self._style_spinbox_arrows(x0_spin, eps_spin, itmax)
+        except Exception:
+            pass
         btn_layout.addStretch(1)
         btn_layout.addWidget(rand_btn)
         btn_layout.addWidget(calc_btn)
@@ -1827,6 +3074,12 @@ class MatrixQtApp(QMainWindow):
         manual_layout.addWidget(manual_hint)
         copy_btn = QPushButton('⬇️ Copiar derivada automática al campo'); copy_btn.setObjectName('btnSecondary')
         manual_layout.addWidget(copy_btn, 0)
+
+        # Estilo para botón auxiliar de copia
+        try:
+            self._style_button(copy_btn, 'secondary')
+        except Exception:
+            pass
 
         stack.addWidget(auto_page)
         stack.addWidget(manual_page)
@@ -2017,7 +3270,7 @@ class MatrixQtApp(QMainWindow):
         rand_btn.clicked.connect(fill_random)
 
     def _push_falsepos_summary_card(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
-        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        content = QWidget(); lay = QVBoxLayout(content); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
         title = QLabel('<b>Falsa Posición</b>'); lay.addWidget(title)
         formula = QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{expr_text}</span>")
         lay.addWidget(formula)
@@ -2027,28 +3280,42 @@ class MatrixQtApp(QMainWindow):
             ea = float(rows[-1][4])
             residual = abs(float(rows[-1][7]))
             sgn = '+' if xr >= 0 else ''
-            l1 = QLabel(f"El método CONVERGE en <b>{n}</b> iteraciones.")
-            l2 = QLabel(f"LA RAÍZ ES: <b>{sgn}{xr:.6f}</b> | Error (Ea): <b>{ea*100:.2f}%</b>")
             tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
-            l3 = QLabel(f"Error raíz |f(r)|: <b>{residual:.6g}</b> | Tolerancia: <b>{tol_show}</b>")
-            for w in (l1, l2, l3):
-                w.setStyleSheet("color:#ddd;")
-                lay.addWidget(w)
 
-        row = QHBoxLayout(); lay.addLayout(row)
-        btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
-        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
+            for text in (
+                f"El método CONVERGE en <b>{n}</b> iteraciones.",
+                f"LA RAÍZ ES: <b>{sgn}{xr:.6f}</b> | Error (Ea): <b>{ea*100:.2f}%</b>",
+                f"Error raíz |f(r)|: <b>{residual:.6g}</b> | Tolerancia: <b>{tol_show}</b>",
+            ):
+                lab = QLabel(text); lab.setStyleSheet("color:#ddd;")
+                lay.addWidget(lab)
 
-        def _open():
-            self._show_falsepos_dialog(expr_text, xi, xu, rows, eps_text)
-        def _remove():
-            card.setParent(None)
-            if card in self._result_widgets:
-                self._result_widgets.remove(card)
-        btn_open.clicked.connect(_open)
-        btn_delete.clicked.connect(_remove)
-        self.right_layout.addWidget(card)
-        self._result_widgets.append(card)
+        copy_lines = []
+        copy_lines.append("Método de Falsa Posición")
+        copy_lines.append(f"f(x) = {expr_text}")
+        if rows:
+            n = len(rows)
+            xr = float(rows[-1][3])
+            ea = float(rows[-1][4])
+            residual = abs(float(rows[-1][7]))
+            tol_show = eps_text if (eps_text is not None and eps_text != '') else ''
+            copy_lines.append(f"Iteraciones: {n}")
+            copy_lines.append(f"Raíz ≈ {xr:.10g}")
+            copy_lines.append(f"Ea ≈ {ea*100:.4f}%")
+            copy_lines.append(f"|f(r)| ≈ {residual:.6g}")
+            if tol_show:
+                copy_lines.append(f"Tolerancia: {tol_show}")
+        copy_text = "\n".join(copy_lines)
+
+        # Igual que en bisección: el botón "Ver detalles" abre el diálogo
+        # dedicado de Falsa Posición.
+        self.add_result_card(
+            'Método de Falsa Posición',
+            content,
+            steps=None,
+            copy_text=copy_text,
+            details_callback=lambda: self._show_falsepos_dialog(expr_text, xi, xu, rows, eps_text),
+        )
 
     def _show_falsepos_dialog(self, expr_text: str, xi: float, xu: float, rows, eps_text: str | None = None):
         try:
@@ -2064,7 +3331,7 @@ class MatrixQtApp(QMainWindow):
             self.push_error(str(e))
 
     def _push_secant_summary_card(self, expr_text: str, x0: float, x1: float, rows, eps_text: str | None, root_estimate: float, residual: float, converged: bool):
-        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        content = QWidget(); lay = QVBoxLayout(content); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
         lay.addWidget(QLabel('<b>Método de la Secante</b>'))
         lay.addWidget(QLabel(f"f(x) = <span style=\"font-family:{MATH_FONT_STACK}\">{html.escape(expr_text)}</span>"))
         lay.addWidget(QLabel(f"Valores iniciales: x₀ = {x0:.6f}, x₁ = {x1:.6f}"))
@@ -2085,20 +3352,32 @@ class MatrixQtApp(QMainWindow):
             tol.setStyleSheet('color:#ddd;')
             lay.addWidget(tol)
 
-        row = QHBoxLayout(); lay.addLayout(row)
-        btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
-        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
+        copy_lines = []
+        copy_lines.append("Método de la Secante")
+        copy_lines.append(f"f(x) = {expr_text}")
+        copy_lines.append(f"x0 = {x0:.10g}, x1 = {x1:.10g}")
+        if rows:
+            iterations = len(rows)
+            ea = float(rows[-1][6])
+            tol_show = eps_text if eps_text else ''
+            copy_lines.append(f"Iteraciones: {iterations}")
+            copy_lines.append(f"Raíz aproximada ≈ {root_estimate:.10g}")
+            copy_lines.append(f"Ea ≈ {ea*100:.4f}%")
+            copy_lines.append(f"|f(c)| ≈ {residual:.6g}")
+            if tol_show:
+                copy_lines.append(f"Tolerancia: {tol_show}")
+            copy_lines.append(f"Estado: {'CONVERGE' if converged else 'NO CONVERGE'}")
+        copy_text = "\n".join(copy_lines)
 
-        def _open():
-            self._show_secant_dialog(expr_text, x0, x1, rows, eps_text)
-        def _remove():
-            card.setParent(None)
-            if card in self._result_widgets:
-                self._result_widgets.remove(card)
-        btn_open.clicked.connect(_open)
-        btn_delete.clicked.connect(_remove)
-        self.right_layout.addWidget(card)
-        self._result_widgets.append(card)
+        # La tarjeta muestra un resumen y el botón "Ver detalles" abre el
+        # SecantResultDialog correspondiente.
+        self.add_result_card(
+            'Método de la Secante',
+            content,
+            steps=None,
+            copy_text=copy_text,
+            details_callback=lambda: self._show_secant_dialog(expr_text, x0, x1, rows, eps_text),
+        )
 
     def _show_secant_dialog(self, expr_text: str, x0: float, x1: float, rows, eps_text: str | None = None):
         try:
@@ -2114,7 +3393,7 @@ class MatrixQtApp(QMainWindow):
             self.push_error(str(e))
 
     def _push_newton_summary_card(self, expr_text: str, deriv_text: str, rows, eps_text: str | None, root_estimate: float, residual: float, manual_derivative: bool, x0_value: float | None):
-        card = QWidget(); card.setObjectName('resultCard'); lay = QVBoxLayout(card)
+        content = QWidget(); lay = QVBoxLayout(content); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
         lay.addWidget(QLabel('<b>Newton-Raphson</b>'))
         expr_html = html.escape(expr_text)
         deriv_html = html.escape(deriv_text)
@@ -2148,6 +3427,18 @@ class MatrixQtApp(QMainWindow):
                 pass
         link = QPushButton('🌐 Ver gráfica completa'); link.setObjectName('btnSecondary')
         link.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        link.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(40, 40, 60, 200);
+                border: 1px solid #7f5af0;
+                color: #ffffff;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #7f5af0;
+            }
+        """)
         lay.addWidget(link)
         if rows:
             iterations = len(rows)
@@ -2164,23 +3455,48 @@ class MatrixQtApp(QMainWindow):
                 if isinstance(w, QLabel):
                     w.setStyleSheet('color:#ddd;')
             lay.addWidget(info_frame)
-        row = QHBoxLayout(); lay.addLayout(row)
-        btn_open = QPushButton('🔍 Ver detalles…'); row.addWidget(btn_open)
-        btn_delete = QPushButton('🗑️ Quitar'); row.addWidget(btn_delete); row.addStretch(1)
 
-        def _open():
-            self._show_newton_dialog(expr_text, deriv_text, rows, eps_text, manual_derivative, root_estimate, x0_value)
         def _geogebra():
             self._open_geogebra(expr_text, x0_value, root_estimate)
-        def _remove():
-            card.setParent(None)
-            if card in self._result_widgets:
-                self._result_widgets.remove(card)
-        btn_open.clicked.connect(_open)
-        btn_delete.clicked.connect(_remove)
+
         link.clicked.connect(_geogebra)
-        self.right_layout.addWidget(card)
-        self._result_widgets.append(card)
+
+        copy_lines = []
+        copy_lines.append("Método de Newton-Raphson")
+        copy_lines.append(f"f(x) = {expr_text}")
+        copy_lines.append(f"f'(x) = {deriv_text}")
+        if x0_value is not None:
+            copy_lines.append(f"x0 = {x0_value:.10g}")
+        if rows:
+            iterations = len(rows)
+            ea = float(rows[-1][5])
+            tol_show = eps_text if eps_text else ''
+            copy_lines.append(f"Iteraciones: {iterations}")
+            copy_lines.append(f"Raíz aproximada ≈ {root_estimate:.10g}")
+            copy_lines.append(f"Ea ≈ {ea*100:.4f}%")
+            copy_lines.append(f"|f(x)| ≈ {residual:.6g}")
+            if tol_show:
+                copy_lines.append(f"Tolerancia: {tol_show}")
+            copy_lines.append(f"Derivada: {'Manual' if manual_derivative else 'Automática'}")
+        copy_text = "\n".join(copy_lines)
+
+        # En Newton-Raphson el botón "Ver detalles" abre el diálogo completo
+        # ya existente.
+        self.add_result_card(
+            'Newton-Raphson',
+            content,
+            steps=None,
+            copy_text=copy_text,
+            details_callback=lambda: self._show_newton_dialog(
+                expr_text,
+                deriv_text,
+                rows,
+                eps_text,
+                manual_derivative,
+                root_estimate,
+                x0_value,
+            ),
+        )
 
     def _show_newton_dialog(self, expr_text: str, deriv_text: str, rows, eps_text: str | None, manual_derivative: bool, root_estimate: float | None, x0_value: float | None):
         try:
@@ -2416,6 +3732,18 @@ class NewtonResultDialog(QDialog):
         link_row = QHBoxLayout()
         link_btn = QPushButton('🌐 Ver gráfica completa'); link_btn.setObjectName('btnSecondary')
         link_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        link_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(40, 40, 60, 200);
+                border: 1px solid #7f5af0;
+                color: #ffffff;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #7f5af0;
+            }
+        """)
         link_row.addStretch(1)
         link_row.addWidget(link_btn)
         lay.addLayout(link_row)
@@ -2475,21 +3803,30 @@ class SplashScreen(QWidget):
         frame.setObjectName("splashFrame")
         frame.setStyleSheet("""
             QFrame#splashFrame {
-                background-color: #1e1f22;
+                background-color: #1e1e2e;
                 border: 1px solid #2b2d31;
                 border-radius: 18px;
             }
-            QLabel#splashTitle { font-size: 16px; font-weight: 700; color: #e6eef2; }
-            QLabel#splashSub   { font-size: 11px; color: #99a1a7; }
+            QLabel#splashTitle {
+                font-size: 18px;
+                font-weight: 800;
+                color: #ffffff;
+                letter-spacing: 3px;
+            }
+            QLabel#splashSub   {
+                font-size: 11px;
+                color: #a78bfa;
+            }
             QProgressBar {
-                background-color: #101214;
-                border: 1px solid #30343a;
-                border-radius: 6px;
+                background-color: #2a2a3e;
+                border: 1px solid #32324a;
+                border-radius: 4px;
                 height: 10px;
             }
             QProgressBar::chunk {
-                background-color: #0099a8;
-                border-radius: 6px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                            stop:0 #7f5af0, stop:1 #9b6bff);
+                border-radius: 4px;
             }
         """)
         eff = QGraphicsDropShadowEffect(self)
@@ -2568,16 +3905,6 @@ def run():
         except Exception:
             pass
     app = QApplication(sys.argv)
-    try:
-        import qdarktheme
-        # Tema oscuro moderno. Podemos personalizar paleta si luego es necesario.
-        qdarktheme.setup_theme(theme='dark')
-    except Exception:
-        pass
-    try:
-        app.setFont(QFont("Segoe UI", 10))
-    except Exception:
-        pass
 
     # Icono global para que Windows muestre el logo en la barra de tareas y miniaturas
     try:
@@ -2585,19 +3912,39 @@ def run():
     except Exception:
         pass
 
-    # Mostrar splash
-    splash = SplashScreen()
-    splash.start()
-    app.processEvents()
+    # Mantener referencias para poder alternar entre WelcomeScreen y la app principal
+    main_window: MatrixQtApp | None = None
 
-    # Construir la ventana principal mientras el splash está visible
-    w = MatrixQtApp()
+    # 1) Mostrar pantalla de bienvenida
+    welcome = WelcomeScreen()
+    welcome.show()
 
-    # Cerrar splash con fade-out y mostrar la app
-    def _show_main():
-        w.showMaximized()
-        splash.finish()
-    QTimer.singleShot(700, _show_main)  # breve espera para sensación fluida
+    # 2) Cuando el usuario pulse ENTRAR, se mostrará el splash de carga y luego la app
+    def launch_main_after_welcome():
+        nonlocal main_window, welcome
+
+        # Splash de carga
+        splash = SplashScreen()
+        splash.start()
+        app.processEvents()
+
+        # Construir la ventana principal si aún no existe
+        if main_window is None:
+            main_window = MatrixQtApp()
+
+        # Cerrar splash con fade-out y mostrar la app
+        def _show_main():
+            if main_window is not None:
+                main_window.showMaximized()
+            splash.finish()
+        QTimer.singleShot(700, _show_main)
+
+    # Sobrescribimos el handler del botón de entrada para encadenar la transición
+    def _on_enter():
+        welcome.hide()
+        launch_main_after_welcome()
+
+    welcome._on_enter_clicked = _on_enter  # type: ignore[attr-defined]
 
     sys.exit(app.exec())
 
